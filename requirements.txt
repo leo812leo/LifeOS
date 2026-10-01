@@ -1,0 +1,26 @@
+# Runtime dependencies
+yfinance
+garminconnect
+notion-client
+python-dotenv
+requests
+
+# Garmin OAuth setup
+garth
+
+# Health tracker (web scraping fallback)
+playwright
+
+# AI Training Coach
+anthropic
+
+# Telegram Bot (optional, for interactive mode)
+python-telegram-bot
+
+# Financial trackers (optional, fill API keys to activate)
+# shioaji             # 永豐金台股 API
+# schwab-py           # Schwab 美股 API
+
+# Testing
+pytest
+pytest-cov
