@@ -20,11 +20,20 @@ Python 3.12 為本次驗證環境；typing 維持原專案 Python 3.9 寫法。
 ```sh
 python -m venv .venv
 # 啟用 .venv 後：
-python -m pip install -r requirements.txt
-python -m pytest tests/ -q
+python -m pip install -r requirements-dev.txt
+python scripts/test_offline.py
 ```
 
-Windows 建議設定 `PYTHONUTF8=1`。測試會在匯入應用程式前停用 dotenv、自動移除服務憑證環境變數，並阻擋外部網路及子程序。Windows asyncio 的標準庫 socketpair 只允許建立自身 loopback 通道。
+Windows 建議設定 `PYTHONUTF8=1`。統一測試入口會在載入 pytest 前隔離 dotenv／服務憑證，阻擋常用網路 transport 及子程序，並將日誌／帳本等 runtime 路徑改用暫存資料夾。Windows asyncio 的標準庫 socketpair 只允許建立自身 loopback 通道。這是防止意外正式服務呼叫的護欄，不是不可信原生程式的安全沙箱；套件安裝仍需網路。
+
+GitHub PR 會執行 Python 離線測試，不會部署或執行正式同步。Runtime 相依套件尚未完整鎖版；不要把測試成功當作升級相容性或正式服務驗證。
+
+## Connector-first 協作
+
+先使用既有 GitHub／Notion connector，不為通用整合再造 API wrapper。
+Notion／Heptabase 的客戶端範例與 Claude／Codex 協作流程見
+[連接與分工指引](docs/CONNECTORS.md)。範例不含憑證、不會自行啟用；
+OAuth、寫入權限與背景排程是三個分開的步驟。
 
 前端需 Node.js >= 22.13.0：
 
@@ -41,7 +50,7 @@ npm run dev
 
 1. 以 `.env.example` 為模板，在自己的 checkout 建立忽略於 Git 的 `.env`；不要把值貼進 issue、日誌或聊天。
 2. 配置私人資料庫、持股與運動員檔案。公開版持股清單是空的，檔案/日期預設值是示範用，不能直接套用到真人。
-3. 先閱讀 [安全注意事項](SECURITY.md) 與 [遷移範圍](docs/MIGRATION.md)。後端仍有既存可靠度問題，`--dry-run` 不能當作無副作用的安全邊界。
+3. 先閱讀 [安全注意事項](SECURITY.md) 與 [遷移範圍](docs/MIGRATION.md)。後端仍有既存可靠度問題；本批只修正每日／每週建議的 dry-run 正式紀錄與通知副作用。`--dry-run` 仍會讀取服務或呼叫 AI，不能當作離線模式。
 4. 未經明確批准，不執行任何真實服務驗證、通知、資料庫遷移或 Windows 排程操作。
 
 此專案不是醫療診斷、用藥處方或投資下單系統。AI 輸出與範例閾值需自行審核。

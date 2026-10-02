@@ -649,6 +649,7 @@ class TestSendMessageTruncation:
         sent_text = mock_post.call_args.kwargs["json"]["text"]
         assert len(sent_text) <= _TELEGRAM_MAX_LEN
 
+
     def test_long_message_is_truncated_before_sending(self) -> None:
         long_text = "☀️ 訓練日報\n" + ("填充文字。" * 2000)
         assert len(long_text) > _TELEGRAM_MAX_LEN
@@ -660,3 +661,39 @@ class TestSendMessageTruncation:
         assert ok is True
         sent_text = mock_post.call_args.kwargs["json"]["text"]
         assert len(sent_text) <= _TELEGRAM_MAX_LEN
+
+
+class TestDeliveryLogPrivacy:
+    @pytest.mark.parametrize("retry_after_parse_error", [False, True])
+    def test_transport_exception_does_not_log_token_url(
+        self, caplog: pytest.LogCaptureFixture, retry_after_parse_error: bool,
+    ) -> None:
+        from requests import ConnectionError
+
+        marker = "SYNTHETIC_SECRET_DO_NOT_LOG"
+        error = ConnectionError("https://api.telegram.org/bot" + marker + "/sendMessage")
+        effects = [error]
+        if retry_after_parse_error:
+            effects.insert(0, MagicMock(status_code=400, text="cannot parse entities"))
+        with patch("requests.post", side_effect=effects):
+            assert _send_message("fake-token", "fake-chat-id", "Synthetic message") is False
+
+        assert marker not in caplog.text
+        assert "Telegram" in caplog.text
+
+    def test_transport_does_not_log_response_body(self, caplog: pytest.LogCaptureFixture) -> None:
+        marker = "SYNTHETIC_PRIVATE_RESPONSE"
+        with patch("requests.post", return_value=MagicMock(status_code=503, text=marker)):
+            assert _send_message("fake-token", "fake-chat-id", "Synthetic message") is False
+
+        assert marker not in caplog.text
+        assert "503" in caplog.text
+
+    def test_safe_alert_does_not_log_exception_text(self, caplog: pytest.LogCaptureFixture) -> None:
+        from scripts.telegram_bot import safe_send_alert
+
+        marker = "SYNTHETIC_SECRET_DO_NOT_LOG"
+        with patch("scripts.telegram_bot.send_alert", side_effect=RuntimeError(marker)):
+            safe_send_alert("synthetic.py", "Synthetic failure")
+
+        assert marker not in caplog.text

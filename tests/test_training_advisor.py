@@ -691,7 +691,7 @@ class TestFuelingInPrompts:
         assert result is not None
         assert "補給演練目標" in result
         assert "/fuel" in result
-        mock_alert.assert_called_once()  # AI 不可用要告警，但不打真 Telegram
+        mock_alert.assert_not_called()  # 乾跑不可發送正式告警。
 
 
 # ── TestRunWeeklyAdvisor ──────────────────────────────────────────────────────

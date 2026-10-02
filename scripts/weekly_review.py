@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from notion_client_helper import get_notion_client, query_pages
+from utils.delivery import send_telegram_text
 from utils.adherence import (
     compute_adherence,
     format_adherence_line,
@@ -88,7 +89,8 @@ def run_weekly_review(dry_run: bool = False) -> Optional[str]:
 
     if not review:
         logger.error("週回顧生成失敗")
-        append_run("weekly_review.py", ok=False, wrote_notion=False)
+        if not dry_run:
+            append_run("weekly_review.py", ok=False, wrote_notion=False)
         return None
 
     # ── 建議遵循率（T15，純程式計算，不經 AI）───────────────────────────
@@ -105,16 +107,11 @@ def run_weekly_review(dry_run: bool = False) -> Optional[str]:
     if dry_run:
         logger.info("乾跑模式 — 內容如下：")
         sys.stdout.buffer.write(("\n" + review + "\n").encode("utf-8"))
-    else:
-        try:
-            from scripts.telegram_bot import send_text
-            ok = send_text(review)
-            if ok:
-                logger.info("✅ 已推送至 Telegram")
-            else:
-                logger.warning("Telegram 未設定或推送失敗")
-        except Exception as exc:
-            logger.error("推送失敗：%s", exc)
+        return review
+
+    if not send_telegram_text(review):
+        append_run("weekly_review.py", ok=False, wrote_notion=False)
+        return None
 
     # weekly_review 本身不寫 Notion DB（只讀歷史資料、推 Telegram 文字），
     # wrote_notion 恆為 False。
