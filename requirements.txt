@@ -1,26 +1,28 @@
-# Runtime dependencies
-yfinance
-garminconnect
-notion-client
-python-dotenv
-requests
+# Direct dependencies pinned to the tested Python 3.12 environment.
+# Review upgrades with the offline test suite; transitive dependencies are not locked.
+yfinance==1.2.0
+garminconnect==0.3.2
+notion-client==2.7.0
+python-dotenv==1.2.1
+requests==2.32.5
 
 # Garmin OAuth setup
-garth
+garth==0.8.0
 
 # Health tracker (web scraping fallback)
-playwright
+playwright==1.58.0
+curl-cffi==0.13.0
 
 # AI Training Coach
-anthropic
+anthropic==0.88.0
 
 # Telegram Bot (optional, for interactive mode)
-python-telegram-bot
+python-telegram-bot==22.7
 
 # Financial trackers (optional, fill API keys to activate)
 # shioaji             # 永豐金台股 API
 # schwab-py           # Schwab 美股 API
 
 # Testing
-pytest
-pytest-cov
+pytest==8.4.2
+pytest-cov==7.1.0

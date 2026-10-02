@@ -14,7 +14,6 @@ import logging
 import os
 from pathlib import Path
 import platform
-import shutil
 import socket
 import sys
 import tempfile
@@ -147,8 +146,45 @@ class _SafeFinder(importlib.abc.MetaPathFinder):
 
 
 def _cleanup(root: Path) -> None:
+    """Remove only our registered temp tree using absolute, non-followed paths.
+
+    fd-based shutil.rmtree emits relative audit paths without their dir_fd on
+    Linux, making harmless temp/logs look like production logs. Do not weaken
+    the audit guard to compensate: keep cleanup operations absolute instead.
+    """
+    registered = getattr(sys, _STATE, None)
+    if (
+        registered is None or root != Path(registered) or not root.is_absolute()
+        or not root.name.startswith("lifeos-offline-")
+        or root.parent.resolve() != Path(tempfile.gettempdir()).resolve()
+        or root.is_symlink() or getattr(root, "is_junction", lambda: False)()
+    ):
+        raise ValueError("Cleanup requires the registered offline test directory")
     logging.shutdown()
-    shutil.rmtree(root, ignore_errors=True)
+    if not root.exists():
+        return
+    canonical_root = root.resolve()
+
+    def remove_directory(directory: Path) -> None:
+        resolved = directory.resolve()
+        if (
+            directory.is_symlink()
+            or getattr(directory, "is_junction", lambda: False)()
+            or (resolved != canonical_root and canonical_root not in resolved.parents)
+        ):
+            raise ValueError("Cleanup cannot follow a path outside its registered directory")
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                child = Path(entry.path)  # Absolute because scandir received an absolute path.
+                if getattr(child, "is_junction", lambda: False)():
+                    child.rmdir()  # Remove the Windows junction, never its target.
+                elif entry.is_dir(follow_symlinks=False):
+                    remove_directory(child)
+                else:
+                    child.unlink()  # Also removes symlinks without following them.
+        directory.rmdir()
+
+    remove_directory(root)
 
 
 def install_guard() -> Path:

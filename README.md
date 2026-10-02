@@ -26,7 +26,7 @@ python scripts/test_offline.py
 
 Windows 建議設定 `PYTHONUTF8=1`。統一測試入口會在載入 pytest 前隔離 dotenv／服務憑證，阻擋常用網路 transport 及子程序，並將日誌／帳本等 runtime 路徑改用暫存資料夾。Windows asyncio 的標準庫 socketpair 只允許建立自身 loopback 通道。這是防止意外正式服務呼叫的護欄，不是不可信原生程式的安全沙箱；套件安裝仍需網路。
 
-GitHub PR 會執行 Python 離線測試，不會部署或執行正式同步。Runtime 相依套件尚未完整鎖版；不要把測試成功當作升級相容性或正式服務驗證。
+GitHub PR 會執行 Python 離線測試，不會部署或執行正式同步。直接依賴已固定為驗證版本，避免安裝時自動跨到不相容的 SDK；傳遞依賴仍未做完整 lock。不要把測試成功當作正式服務驗證。
 
 ## Connector-first 協作
 

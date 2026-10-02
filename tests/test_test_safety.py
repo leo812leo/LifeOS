@@ -3,8 +3,10 @@
 import asyncio
 import os
 from pathlib import Path
+import shutil
 import socket
 import sys
+import tempfile
 
 import pytest
 
@@ -137,3 +139,44 @@ def test_guard_installation_is_idempotent() -> None:
     before = socket.socketpair
     assert install_guard() == install_guard()
     assert socket.socketpair is before
+
+
+def test_cleanup_avoids_ambiguous_relative_audit_events(monkeypatch) -> None:
+    """Linux rmtree emits 'open logs' without its dir_fd in the audit event."""
+    from scripts import test_offline
+
+    root = Path(tempfile.mkdtemp(prefix="lifeos-offline-cleanup-"))
+    (root / "logs").mkdir()
+    (root / "logs/result.txt").write_text("synthetic", encoding="utf-8")
+    monkeypatch.setattr(sys, test_offline._STATE, str(root))
+    monkeypatch.setattr(test_offline.logging, "shutdown", lambda: None)
+
+    def fd_based_rmtree(*args, **kwargs) -> None:
+        sys.audit("open", "logs", None, 0)
+
+    # Safely reproduce Linux's audit behavior even on Windows.
+    monkeypatch.setattr(shutil, "rmtree", fd_based_rmtree)
+    try:
+        test_offline._cleanup(root)
+        assert not root.exists()
+        with pytest.raises(RuntimeError, match="offline tests"):
+            sys.audit("open", "logs", None, 0)
+    finally:
+        # RED cleanup is restricted to the synthetic paths created above.
+        if (root / "logs/result.txt").exists():
+            (root / "logs/result.txt").unlink()
+        if (root / "logs").exists():
+            (root / "logs").rmdir()
+        if root.exists():
+            root.rmdir()
+
+
+def test_cleanup_rejects_unregistered_target_before_deletion(monkeypatch, tmp_path) -> None:
+    from scripts import test_offline
+
+    calls = []
+    monkeypatch.setattr(test_offline.logging, "shutdown", lambda: None)
+    monkeypatch.setattr(shutil, "rmtree", lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(ValueError, match="registered"):
+        test_offline._cleanup(tmp_path)
+    assert calls == []
