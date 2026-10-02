@@ -1,5 +1,35 @@
 # Public roadmap
 
+## Connector-first foundation — 2026-10-03
+
+- Add an offline test launcher, temporary runtime paths and guards against
+  accidental credential loading, live service calls and production ledger writes.
+- Share confirmed Telegram delivery handling across daily, weekly and training
+  advice. Failed or unconfirmed delivery is not a successful notification run.
+- Keep dry-run out of production ledgers/advice and suppress fallback alerts.
+  Dry-run may still read services or invoke AI; only the test launcher is offline.
+- Add inactive official Notion/Heptabase MCP examples and connector ownership
+  guidance. No client authorization or production integration is implied.
+- Add GitHub PR/issue templates and a Python-only CI workflow with read-only
+  repository permissions, no service secrets and no deployment steps.
+- Offline verification: 710 public-snapshot tests passed on Windows Python 3.12;
+  the original local source passed 705 tests. The new delivery helper has 100%
+  coverage and the new offline launcher has 82% coverage. The existing large
+  advice modules do not yet meet 80% full coverage.
+- Independent review fixes include generation-only ledger isolation and avoiding
+  credential-bearing Telegram exception/response bodies in logs. Cloud CI results
+  must be reported separately; no live-service verification is implied.
+
+- The first clean Linux CI run exposed an unbounded Notion SDK major upgrade.
+  Direct runtime dependencies now use the tested versions; transitive locking
+  remains follow-up work. This does not upgrade the existing local environment.
+- Offline temporary-directory cleanup now validates the registered root and uses
+  absolute paths, avoiding Linux fd-relative audit ambiguity without disabling
+  IO guards or following symlink/junction targets.
+
+Transitive dependency locking, finance completeness/date corrections, activity
+reconciliation, external monitoring and live dashboard data remain separate work.
+
 ## Source publication — 2026-10-02
 
 - Sanitized source snapshot prepared from the existing local project.
@@ -9,7 +39,7 @@
 
 ## Before production cloud migration
 
-1. Make dry-run prohibit both notifications and production ledger writes.
+1. Extend dry-run write isolation to any remaining entry points; never treat it as offline.
 2. Separate compute, storage, notification delivery and freshness status.
 3. Make market snapshots date-aware, complete and idempotently correctable.
 4. Fail closed on Notion deduplication failures; reconcile pending activity reports.

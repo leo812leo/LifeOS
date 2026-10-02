@@ -1,0 +1,6 @@
+# Use the same runtime dependency list; do not copy a developer's environment.
+-r requirements.txt
+
+# Tested tooling versions; direct runtime pins are maintained in requirements.txt.
+pytest==8.4.2
+pytest-cov==7.1.0

@@ -343,7 +343,7 @@ class TestInferCategoryFromMessage:
 
 
 class TestRunDailyAdjust:
-    def test_dry_run_calls_log_advice_and_returns_message(self, tmp_path, monkeypatch) -> None:
+    def test_dry_run_returns_message_without_logging_production_advice(self, tmp_path, monkeypatch) -> None:
         log_path = tmp_path / "advice_log.jsonl"
         monkeypatch.setattr("scripts.daily_adjust._ADVICE_LOG", log_path)
         monkeypatch.setattr("scripts.daily_adjust.append_run", MagicMock())
@@ -367,9 +367,7 @@ class TestRunDailyAdjust:
         # "☀️ 測試建議內容" 沒有「✅ 維持」標記 → 走完整建議路徑（附加睡眠區段，T18）。
         assert result.startswith("☀️ 測試建議內容")
         assert "就寢目標" in result
-        assert log_path.exists()
-        record = json.loads(log_path.read_text(encoding="utf-8").strip())
-        assert record["message"] == result
+        assert not log_path.exists()
 
     def test_returns_none_when_generation_fails(self) -> None:
         with patch(
@@ -388,11 +386,9 @@ class TestRunDailyAdjust:
             result = run_daily_adjust(dry_run=True)
 
         assert result is None
-        mock_append_run.assert_called_once_with(
-            "daily_adjust.py", ok=False, wrote_notion=False
-        )
+        mock_append_run.assert_not_called()
 
-    def test_success_path_appends_ok_run_ledger_entry(self, tmp_path, monkeypatch) -> None:
+    def test_dry_run_success_does_not_append_production_ledger(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(
             "scripts.daily_adjust._ADVICE_LOG", tmp_path / "advice_log.jsonl"
         )
@@ -413,9 +409,7 @@ class TestRunDailyAdjust:
         ) as mock_append_run:
             run_daily_adjust(dry_run=True)
 
-        mock_append_run.assert_called_once_with(
-            "daily_adjust.py", ok=True, wrote_notion=False
-        )
+        mock_append_run.assert_not_called()
 
 
 # ── 心跳分流輔助函式（T09）────────────────────────────────────────────────

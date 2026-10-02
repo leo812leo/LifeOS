@@ -115,8 +115,8 @@ def safe_send_alert(script_name: str, error_message: str) -> None:
     """
     try:
         send_alert(script_name, error_message)
-    except Exception as exc:
-        logger.warning("Telegram 警告推送失敗（忽略）：%s", exc)
+    except Exception:
+        logger.warning("Telegram 警告推送失敗（忽略）")
 
 
 # ── Telegram API ─────────────────────────────────────────────────────────────
@@ -192,9 +192,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
             logger.info("Telegram 訊息發送成功")
             return True
         else:
-            logger.error(
-                "Telegram 發送失敗：%d %s", resp.status_code, resp.text[:200]
-            )
+            # 回應本文或例外可能含 token URL，不可直接記錄。
+            logger.error("Telegram 發送失敗：HTTP %d", resp.status_code)
             # HTML 解析失敗時，改用純文字重試
             if resp.status_code == 400 and "parse" in resp.text.lower():
                 logger.info("HTML 解析失敗，改用純文字重試")
@@ -205,8 +204,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
                     logger.info("純文字重試成功")
                     return True
             return False
-    except Exception as exc:
-        logger.error("Telegram 發送失敗：%s", exc)
+    except Exception:
+        logger.error("Telegram 發送失敗：傳輸未確認送達")
         return False
 
 

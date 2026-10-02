@@ -178,9 +178,7 @@ class TestRunWeeklyReviewAdherenceLine:
         assert result is None
         mock_adherence.assert_not_called()
         mock_sleep_trend.assert_not_called()
-        mock_append_run.assert_called_once_with(
-            "weekly_review.py", ok=False, wrote_notion=False
-        )
+        mock_append_run.assert_not_called()
 
 
 # ── _compute_week_sleep_trend（T18）───────────────────────────────────────

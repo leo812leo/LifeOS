@@ -46,6 +46,7 @@ from scripts.notion_reader import (
     fetch_nutrition_history,
     rolling_resting_hr,
 )
+from utils.delivery import send_telegram_text
 from utils.fueling import carb_target_g_per_hr, format_fuel_history
 from utils.logger import get_logger
 from utils.run_ledger import append_run
@@ -551,6 +552,7 @@ def run_weekly_advisor(
         dry_run: 乾跑模式，只印出結果不發送 Telegram。
         days: 歷史數據回溯天數（預設 28 天）。
         output_telegram: 是否推送至 Telegram（dry_run 為 True 時無效）。
+            關閉時只生成文字，不更新正式執行帳本或發送告警。
 
     Returns:
         格式化的週訓練計劃文字，失敗時回傳 None。
@@ -558,6 +560,7 @@ def run_weekly_advisor(
     logger.info("=" * 60)
     logger.info("週訓練建議 — %s", date.today().isoformat())
     logger.info("=" * 60)
+    production_delivery = output_telegram and not dry_run
 
     # ── 載入設定 ──────────────────────────────────────────────────────────────
     notion_api_key = os.getenv("NOTION_API_KEY", "")
@@ -571,12 +574,14 @@ def run_weekly_advisor(
 
     if not notion_api_key:
         logger.error("NOTION_API_KEY 未設定，無法繼續")
-        append_run("training_advisor.py", ok=False, wrote_notion=False)
+        if production_delivery:
+            append_run("training_advisor.py", ok=False, wrote_notion=False)
         return None
 
     if not health_db_id:
         logger.error("HEALTH_DB_ID 未設定，無法繼續")
-        append_run("training_advisor.py", ok=False, wrote_notion=False)
+        if production_delivery:
+            append_run("training_advisor.py", ok=False, wrote_notion=False)
         return None
 
     if not activity_db_id:
@@ -647,23 +652,28 @@ def run_weekly_advisor(
     if not plan_text:
         logger.warning("AI API 不可用，使用 fallback 計劃")
         plan_text = _build_fallback_plan(context, profile, coach_context)
-        # 通知用戶 AI 不可用（但不中斷流程，仍然輸出 fallback）
-        try:
-            from scripts.telegram_bot import safe_send_alert
-            safe_send_alert(
-                "training_advisor.py",
-                "AI API 不可用（OPENROUTER_API_KEY 或 ANTHROPIC_API_KEY 失效）。已使用 fallback 計劃。",
-            )
-        except Exception as exc:
-            logger.warning("AI 不可用告警發送失敗（不中斷流程）：%s", exc)
+        # 只有正式推送模式可發告警；預覽與只生成模式不能碰 Telegram。
+        if production_delivery:
+            try:
+                from scripts.telegram_bot import safe_send_alert
+                safe_send_alert(
+                    "training_advisor.py",
+                    "AI API 不可用（OPENROUTER_API_KEY 或 ANTHROPIC_API_KEY 失效）。已使用 fallback 計劃。",
+                )
+            except Exception:
+                logger.warning("AI 不可用告警發送失敗（不中斷流程）")
 
     # ── 輸出 ──────────────────────────────────────────────────────────────────
     if dry_run:
         logger.info("乾跑模式 — 計劃如下：")
         # Windows console 可能不支援 emoji，用 utf-8 強制輸出
         sys.stdout.buffer.write(("\n" + plan_text + "\n").encode("utf-8"))
-    elif output_telegram:
-        _send_to_telegram(plan_text)
+        return plan_text
+    if not output_telegram:
+        return plan_text
+    if not _send_to_telegram(plan_text):
+        append_run("training_advisor.py", ok=False, wrote_notion=False)
+        return None
 
     # training_advisor 本身不寫 Notion（只讀歷史、生成建議推 Telegram），
     # wrote_notion 恆為 False。
@@ -1068,20 +1078,9 @@ def _build_fallback_plan(
 # ── Telegram 推播 ────────────────────────────────────────────────────────────
 
 
-def _send_to_telegram(plan_text: str) -> None:
-    """推送週計劃至 Telegram。"""
-    try:
-        from scripts.telegram_bot import send_text
-
-        success = send_text(plan_text)
-        if success:
-            logger.info("週計劃已推送至 Telegram")
-        else:
-            logger.warning("Telegram 未設定（TELEGRAM_BOT_TOKEN/CHAT_ID 缺失），跳過推播")
-    except ImportError:
-        logger.warning("telegram_bot 模組無法載入")
-    except Exception as exc:
-        logger.error("Telegram 推播失敗：%s", exc)
+def _send_to_telegram(plan_text: str) -> bool:
+    """推送週計劃，只有確定送達才回傳 True。"""
+    return send_telegram_text(plan_text)
 
 
 # ── 工具函式 ─────────────────────────────────────────────────────────────────
