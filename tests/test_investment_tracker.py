@@ -525,8 +525,8 @@ class TestMainFxFailure:
 
 
 class TestMainPartialFailure:
-    def test_alerts_but_continues_when_some_stocks_fail(self) -> None:
-        """部分標的失敗 → 仍依現有邏輯處理，但額外告警提醒。"""
+    def test_alerts_and_stops_when_some_stocks_fail(self) -> None:
+        """部分標的失敗 → 不發布不完整總額，告警並以非零結束。"""
         tuesday = date(2026, 7, 14)
         partial_portfolio = PortfolioResult(
             tw_total_twd=100_000.0,
@@ -569,9 +569,11 @@ class TestMainPartialFailure:
             patch("scripts.investment_tracker.write_to_notion") as mock_write,
             patch("scripts.investment_tracker._alert_failure") as mock_alert,
         ):
-            main()
+            with pytest.raises(SystemExit) as exc_info:
+                main()
 
-        mock_write.assert_not_called()  # INVESTMENT_DB_ID 未設定，本測試不驗證寫入路徑
+        assert exc_info.value.code == 1
+        mock_write.assert_not_called()
         mock_alert.assert_called_once()
         assert "FAILED.TW" in mock_alert.call_args[0][0]
 

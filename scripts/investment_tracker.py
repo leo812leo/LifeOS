@@ -110,6 +110,11 @@ class PortfolioResult:
 # ── 抓取股價 ───────────────────────────────────────────────────────────────────
 
 
+def _positive_finite(value: Optional[float]) -> bool:
+    """Return whether a quote is present, finite and strictly positive."""
+    return value is not None and math.isfinite(value) and value > 0
+
+
 def fetch_price(symbol: str) -> Optional[float]:
     """從 yfinance 取得最新收盤價。
 
@@ -132,6 +137,9 @@ def fetch_price(symbol: str) -> Optional[float]:
             logger.warning("[%s] 所有收盤價均為 NaN（非交易時段或資料缺漏）", symbol)
             return None
         price = float(valid.iloc[-1])
+        if not _positive_finite(price):
+            logger.warning("[%s] 收盤價無效，視為資料缺漏", symbol)
+            return None
         logger.info("[%s] 收盤價：%.2f", symbol, price)
         return price
     except Exception as exc:
@@ -156,6 +164,9 @@ def fetch_usd_twd_rate() -> Optional[float]:
             logger.warning("[%s] 匯率資料全為 NaN", FX_USD_TWD)
             return None
         rate = float(valid.iloc[-1])
+        if not _positive_finite(rate):
+            logger.warning("[%s] 匯率無效，視為資料缺漏", FX_USD_TWD)
+            return None
         logger.info("USD/TWD 匯率（yfinance）：%.4f", rate)
         return rate
     except Exception as exc:
@@ -177,6 +188,9 @@ def _fetch_usd_twd_from_frankfurter() -> Optional[float]:
         resp.raise_for_status()
         data = resp.json()
         rate = float(data["rates"]["TWD"])
+        if not _positive_finite(rate):
+            logger.warning("Frankfurter 備用匯率無效，視為資料缺漏")
+            return None
         logger.info("USD/TWD 匯率（Frankfurter 備用）：%.4f", rate)
         return rate
     except Exception as exc:
@@ -195,7 +209,7 @@ def fetch_usd_twd_rate_with_fallback() -> Optional[float]:
         匯率（float）；所有來源均失敗時回傳 None。
     """
     rate = fetch_usd_twd_rate()
-    if rate is not None:
+    if _positive_finite(rate):
         return rate
 
     logger.warning("yfinance 匯率失敗，切換備用來源 Frankfurter...")
@@ -230,7 +244,7 @@ def _calc_positions(
 
     for stock in stocks:
         price = fetch_price(stock.symbol)
-        if price is None:
+        if price is None or not _positive_finite(price):
             errors.append(stock.symbol)
             continue
 
@@ -329,19 +343,12 @@ def fetch_prev_portfolio_total(client: Client) -> Optional[float]:
 # ── 寫入 Notion ────────────────────────────────────────────────────────────────
 
 
-def _safe_number(value: float, default: float = 0.0) -> float:
-    """將 NaN/Inf 替換為 default，確保 Notion API 可接受的數值。
-
-    Args:
-        value: 原始數值。
-        default: NaN/Inf 時的替代值（預設 0.0）。
-
-    Returns:
-        有效的 float 數值。
-    """
-    if math.isnan(value) or math.isinf(value):
-        return default
-    return value
+def _valid_totals(portfolio: PortfolioResult) -> bool:
+    """Reject invalid aggregate values instead of disguising them as zero."""
+    return all(math.isfinite(value) and value >= 0 for value in (
+        portfolio.tw_total_twd, portfolio.us_total_usd,
+        portfolio.us_total_twd, portfolio.grand_total_twd,
+    ))
 
 
 def write_to_notion(
@@ -352,7 +359,7 @@ def write_to_notion(
     """將投資組合結果寫入 Notion Investment DB。
 
     具備防重複寫入保護：同日已存在記錄時直接回傳 True 跳過。
-    Notes 欄位自動帶入：日變動 %、前三大持倉比例、失敗代碼。
+    資料缺漏或數值無效時拒絕寫入；Notes 帶入日變動 %、前三大持倉比例。
 
     Notion DB 欄位（固定，請勿更改）：
         ``Name`` ``Date`` ``Total TWD`` ``TW Total`` ``US Total``
@@ -366,6 +373,10 @@ def write_to_notion(
     Returns:
         寫入成功（或已存在跳過）回傳 True，失敗回傳 False。
     """
+    if portfolio.errors or not _positive_finite(usd_twd_rate) or not _valid_totals(portfolio):
+        logger.error("投資快照不完整或數值無效，拒絕寫入 Notion。")
+        return False
+
     client = get_notion_client(NOTION_API_KEY)
 
     # 防重複寫入：同一天已存在則跳過。
@@ -405,18 +416,15 @@ def write_to_notion(
         )
         note_parts.append(f"前3：{alloc_str}")
 
-    if portfolio.errors:
-        note_parts.append(f"失敗：{', '.join(portfolio.errors)}")
-
     note = " | ".join(note_parts)
 
     properties: Dict[str, object] = {
         "Name":          prop_title(f"Investment {record_date}"),
         "Date":          prop_date(record_date),
-        "Total TWD":     prop_number(_safe_number(portfolio.grand_total_twd)),
-        "TW Total":      prop_number(_safe_number(portfolio.tw_total_twd)),
-        "US Total":      prop_number(_safe_number(portfolio.us_total_twd)),
-        "Exchange Rate": prop_number(_safe_number(usd_twd_rate)),
+        "Total TWD":     prop_number(portfolio.grand_total_twd),
+        "TW Total":      prop_number(portfolio.tw_total_twd),
+        "US Total":      prop_number(portfolio.us_total_twd),
+        "Exchange Rate": prop_number(usd_twd_rate),
         "Notes":         prop_rich_text(note),
     }
 
@@ -502,7 +510,7 @@ def main() -> None:
 
     # 使用備用機制抓取匯率
     usd_twd_rate = fetch_usd_twd_rate_with_fallback()
-    if usd_twd_rate is None:
+    if usd_twd_rate is None or not _positive_finite(usd_twd_rate):
         logger.error("無法取得匯率（主要 + 備用來源均失敗），腳本終止。")
         _alert_failure(
             "投資追蹤失敗：無法取得 USD/TWD 匯率（yfinance + Frankfurter 備用來源皆失敗）。"
@@ -525,11 +533,19 @@ def main() -> None:
         sys.exit(1)
 
     if portfolio.errors:
-        logger.warning("─ 部分標的抓取失敗：%s", portfolio.errors)
+        logger.error("部分標的抓取失敗，拒絕發布不完整總額：%s", portfolio.errors)
         _alert_failure(
             f"投資追蹤部分標的失敗：{', '.join(portfolio.errors)}"
-            "（其餘標的正常處理，詳見 Notion Notes 欄位）。"
+            "（本次未寫入總額，請稍後重跑補齊）。"
         )
+        append_run("investment_tracker.py", ok=False, wrote_notion=False)
+        sys.exit(1)
+
+    if not _valid_totals(portfolio):
+        logger.error("投資快照總額無效，跳過 Notion 寫入。")
+        _alert_failure("投資追蹤失敗：總額數值無效，本次未寫入，請檢查資料後重跑。")
+        append_run("investment_tracker.py", ok=False, wrote_notion=False)
+        sys.exit(1)
 
     # 從 Notion 讀取上一筆資料以計算日變動 %
     if INVESTMENT_DB_ID and INVESTMENT_DB_ID != "placeholder":

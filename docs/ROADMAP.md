@@ -1,5 +1,21 @@
 # Public roadmap
 
+## Investment snapshot completeness — 2026-10-06
+
+- Reject a portfolio snapshot if any configured holding lacks a valid quote;
+  stop before Notion access, record a failed run and exit with status 1.
+- Treat nonpositive or nonfinite prices/FX as missing data. Invalid primary FX
+  uses the existing fallback. Reject invalid aggregate totals instead of writing
+  zero in their place, including at the direct Notion writer boundary.
+- A failed partial run creates no date record, so a later complete run can write
+  the same date. Existing historical partial records are not modified.
+- Changes use the connector-first foundation in PR #1; validation and the new PR
+  status must be verified separately. No production services are used in tests.
+- Local offline validation passed: 737 original-source tests and 742 sanitized
+  public-snapshot tests. Independent code and Python reviews approved the patch.
+- Quote-date alignment, historical reconciliation, concurrent deduplication and
+  write-failure exit semantics remain follow-up work.
+
 ## Connector-first foundation — 2026-10-03
 
 - Add an offline test launcher, temporary runtime paths and guards against
