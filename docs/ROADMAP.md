@@ -8,8 +8,9 @@
   successful writes and the no-database skip path are unchanged.
 - The regression test failed before the fix and passes afterward. The isolated
   public snapshot passes all 34 investment tests and all 742 offline tests;
-  no production service was called. Independent code and Python reviews were
-  requested; remote PR and CI verification remain pending.
+  no production service was called. Independent code and Python reviews passed.
+  GitHub PR #2 remote blobs match these staged files; its Linux CI run is
+  pending.
 - This update is scoped to the existing investment PR #2 and is not merged or
   deployed.
 
@@ -84,3 +85,4 @@ observability. Keep human GTD tasks separate from machine jobs. Notion can hold
 structured records and actions; Heptabase can hold knowledge and relationships.
 Calendar records actual time commitments. Define one owner per data type before
 adding bidirectional synchronization. These are design directions, not implemented integrations.
+
