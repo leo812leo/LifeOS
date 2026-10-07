@@ -629,8 +629,14 @@ class TestMainWriteFailureAlerts:
             ),
             patch("scripts.investment_tracker.write_to_notion", return_value=False),
             patch("scripts.investment_tracker._alert_failure") as mock_alert,
+            patch("scripts.investment_tracker.append_run") as mock_append_run,
         ):
-            main()
+            with pytest.raises(SystemExit) as exc_info:
+                main()
 
+        assert exc_info.value.code == 1
         mock_alert.assert_called_once()
         assert "寫入失敗" in mock_alert.call_args[0][0]
+        mock_append_run.assert_called_once_with(
+            "investment_tracker.py", ok=False, wrote_notion=False
+        )

@@ -600,6 +600,7 @@ def main() -> None:
             logger.error("✗ 寫入 Notion 失敗")
             _alert_failure(f"Notion Investment DB 寫入失敗（日期：{record_date}）。")
             append_run("investment_tracker.py", ok=False, wrote_notion=False)
+            sys.exit(1)
     else:
         logger.warning("INVESTMENT_DB_ID 尚未設定，跳過 Notion 寫入。")
         append_run("investment_tracker.py", ok=True, wrote_notion=False)

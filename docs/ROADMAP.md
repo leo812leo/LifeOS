@@ -1,5 +1,18 @@
 # Public roadmap
 
+## Investment write failure exit status — 2026-10-08
+
+- If the Notion writer reports failure, investment tracking now preserves the
+  existing alert and failed-run ledger entry, then exits with status 1. This
+  lets schedulers and monitoring distinguish a failed write from success;
+  successful writes and the no-database skip path are unchanged.
+- The regression test failed before the fix and passes afterward. The isolated
+  public snapshot passes all 34 investment tests and all 742 offline tests;
+  no production service was called. Independent code and Python reviews were
+  requested; remote PR and CI verification remain pending.
+- This update is scoped to the existing investment PR #2 and is not merged or
+  deployed.
+
 ## Investment snapshot completeness — 2026-10-06
 
 - Reject a portfolio snapshot if any configured holding lacks a valid quote;
@@ -13,8 +26,8 @@
   status must be verified separately. No production services are used in tests.
 - Local offline validation passed: 737 original-source tests and 742 sanitized
   public-snapshot tests. Independent code and Python reviews approved the patch.
-- Quote-date alignment, historical reconciliation, concurrent deduplication and
-  write-failure exit semantics remain follow-up work.
+- Quote-date alignment, historical reconciliation and concurrent deduplication
+  remain follow-up work.
 
 ## Connector-first foundation — 2026-10-03
 
