@@ -9,8 +9,8 @@
 - The regression test failed before the fix and passes afterward. The isolated
   public snapshot passes all 34 investment tests and all 742 offline tests;
   no production service was called. Independent code and Python reviews passed.
-  GitHub PR #2 remote blobs match these staged files; its Linux CI run is
-  pending.
+  GitHub Linux CI run 37687140514 passed all 742 tests; remote blobs match the
+  staged patch. No production service was called.
 - This update is scoped to the existing investment PR #2 and is not merged or
   deployed.
 
