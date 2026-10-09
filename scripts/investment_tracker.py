@@ -110,28 +110,47 @@ class PortfolioResult:
 # ── 抓取股價 ───────────────────────────────────────────────────────────────────
 
 
-def fetch_price(symbol: str) -> Optional[float]:
-    """從 yfinance 取得最新收盤價。
+def _positive_finite(value: Optional[float]) -> bool:
+    """Return whether a quote is present, finite and strictly positive."""
+    return value is not None and math.isfinite(value) and value > 0
 
-    使用 ``period='5d'`` 並跳過 NaN，確保非交易時段也能取到最近有效收盤價。
+
+def fetch_price(symbol: str, as_of: Optional[date] = None) -> Optional[float]:
+    """從 yfinance 取得最新收盤價，或指定快照日期的收盤價。
+
+    指定日期時只接受該日期的收盤價，不以其他日期的最新價替代；
+    未指定日期時使用 ``period='5d'``，保留舊有呼叫行為。
 
     Args:
         symbol: yfinance 股票代碼，例如 ``'2330.TW'`` 或 ``'AAPL'``。
+        as_of: 必須匹配的行情日期；市場休市或資料缺漏時回傳 None。
 
     Returns:
         收盤價（float）；抓取失敗或全為 NaN 時回傳 None。
     """
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="5d")
+        if as_of is None:
+            hist = ticker.history(period="5d")
+        else:
+            hist = ticker.history(
+                start=as_of.isoformat(),
+                end=(as_of + timedelta(days=1)).isoformat(),
+            )
         if hist.empty:
             logger.warning("[%s] 無法取得歷史資料（可能休市或代碼錯誤）", symbol)
             return None
-        valid = hist["Close"].dropna()
+        valid = hist["Close"]
+        if as_of is not None:
+            valid = valid.loc[hist.index.date == as_of]
+        valid = valid.dropna()
         if valid.empty:
-            logger.warning("[%s] 所有收盤價均為 NaN（非交易時段或資料缺漏）", symbol)
+            logger.warning("[%s] %s 無有效收盤價（非交易日或資料缺漏）", symbol, as_of)
             return None
         price = float(valid.iloc[-1])
+        if not _positive_finite(price):
+            logger.warning("[%s] 收盤價無效，視為資料缺漏", symbol)
+            return None
         logger.info("[%s] 收盤價：%.2f", symbol, price)
         return price
     except Exception as exc:
@@ -139,23 +158,37 @@ def fetch_price(symbol: str) -> Optional[float]:
         return None
 
 
-def fetch_usd_twd_rate() -> Optional[float]:
+def fetch_usd_twd_rate(as_of: Optional[date] = None) -> Optional[float]:
     """抓取 USD/TWD 匯率（1 美元 = ? 台幣）from yfinance。
+
+    指定日期時只回傳當日匯率，不使用最新值替代。
 
     Returns:
         匯率（float）；失敗時回傳 None。
     """
     try:
         ticker = yf.Ticker(FX_USD_TWD)
-        hist = ticker.history(period="5d")
+        if as_of is None:
+            hist = ticker.history(period="5d")
+        else:
+            hist = ticker.history(
+                start=as_of.isoformat(),
+                end=(as_of + timedelta(days=1)).isoformat(),
+            )
         if hist.empty:
             logger.warning("[%s] 無法取得匯率資料", FX_USD_TWD)
             return None
-        valid = hist["Close"].dropna()
+        valid = hist["Close"]
+        if as_of is not None:
+            valid = valid.loc[hist.index.date == as_of]
+        valid = valid.dropna()
         if valid.empty:
-            logger.warning("[%s] 匯率資料全為 NaN", FX_USD_TWD)
+            logger.warning("[%s] %s 無有效匯率資料", FX_USD_TWD, as_of)
             return None
         rate = float(valid.iloc[-1])
+        if not _positive_finite(rate):
+            logger.warning("[%s] 匯率無效，視為資料缺漏", FX_USD_TWD)
+            return None
         logger.info("USD/TWD 匯率（yfinance）：%.4f", rate)
         return rate
     except Exception as exc:
@@ -163,20 +196,36 @@ def fetch_usd_twd_rate() -> Optional[float]:
         return None
 
 
-def _fetch_usd_twd_from_frankfurter() -> Optional[float]:
+def _fetch_usd_twd_from_frankfurter(as_of: Optional[date] = None) -> Optional[float]:
     """從 Frankfurter API 抓取 USD/TWD 匯率（備用來源，免費無需 API key）。
 
     Returns:
         匯率（float）；失敗時回傳 None。
     """
     try:
-        resp = requests.get(
-            "https://api.frankfurter.app/latest?from=USD&to=TWD",
-            timeout=10,
-        )
+        if as_of is None:
+            resp = requests.get(
+                "https://api.frankfurter.app/latest?from=USD&to=TWD",
+                timeout=10,
+            )
+        else:
+            resp = requests.get(
+                "https://api.frankfurter.dev/v2/rate/usd/twd",
+                params={"date": as_of.isoformat()},
+                timeout=10,
+            )
         resp.raise_for_status()
         data = resp.json()
-        rate = float(data["rates"]["TWD"])
+        if as_of is None:
+            rate = float(data["rates"]["TWD"])
+        else:
+            if data.get("date") != as_of.isoformat():
+                logger.warning("Frankfurter 匯率日期與快照日期不符，拒絕使用")
+                return None
+            rate = float(data["rate"])
+        if not _positive_finite(rate):
+            logger.warning("Frankfurter 備用匯率無效，視為資料缺漏")
+            return None
         logger.info("USD/TWD 匯率（Frankfurter 備用）：%.4f", rate)
         return rate
     except Exception as exc:
@@ -184,7 +233,9 @@ def _fetch_usd_twd_from_frankfurter() -> Optional[float]:
         return None
 
 
-def fetch_usd_twd_rate_with_fallback() -> Optional[float]:
+def fetch_usd_twd_rate_with_fallback(
+    as_of: Optional[date] = None,
+) -> Optional[float]:
     """抓取 USD/TWD 匯率，yfinance 失敗時自動切換備用來源。
 
     嘗試順序：
@@ -194,12 +245,15 @@ def fetch_usd_twd_rate_with_fallback() -> Optional[float]:
     Returns:
         匯率（float）；所有來源均失敗時回傳 None。
     """
-    rate = fetch_usd_twd_rate()
-    if rate is not None:
+    if as_of is None:
+        rate = fetch_usd_twd_rate()
+    else:
+        rate = fetch_usd_twd_rate(as_of=as_of)
+    if _positive_finite(rate):
         return rate
 
     logger.warning("yfinance 匯率失敗，切換備用來源 Frankfurter...")
-    return _fetch_usd_twd_from_frankfurter()
+    return _fetch_usd_twd_from_frankfurter(as_of=as_of)
 
 
 # ── 計算投資組合 ───────────────────────────────────────────────────────────────
@@ -209,6 +263,7 @@ def _calc_positions(
     stocks: List[StockInfo],
     price_in_base: bool,
     usd_twd_rate: float,
+    as_of: Optional[date] = None,
 ) -> Tuple[List[StockPosition], float, List[str]]:
     """計算一組持股的部位明細與總市值。
 
@@ -216,6 +271,7 @@ def _calc_positions(
         stocks: 持股清單（:class:`~config.StockInfo`）。
         price_in_base: True 表示價格已是台幣（台股）；False 表示美元（美股）。
         usd_twd_rate: USD/TWD 匯率，僅在 ``price_in_base=False`` 時使用。
+        as_of: 必須匹配的行情日期；未指定時沿用抓取最近有效價格。
 
     Returns:
         ``(positions, total_base, errors)``：
@@ -229,8 +285,12 @@ def _calc_positions(
     errors: List[str] = []
 
     for stock in stocks:
-        price = fetch_price(stock.symbol)
-        if price is None:
+        price = (
+            fetch_price(stock.symbol, as_of=as_of)
+            if as_of is not None
+            else fetch_price(stock.symbol)
+        )
+        if price is None or not _positive_finite(price):
             errors.append(stock.symbol)
             continue
 
@@ -252,20 +312,24 @@ def _calc_positions(
     return positions, total_base, errors
 
 
-def calculate_portfolio(usd_twd_rate: float) -> PortfolioResult:
+def calculate_portfolio(
+    usd_twd_rate: float,
+    as_of: Optional[date] = None,
+) -> PortfolioResult:
     """計算台股和美股各持股的市值，彙總總資產（台幣），並計算各標的佔比。
 
     Args:
         usd_twd_rate: USD/TWD 匯率。
+        as_of: 必須匹配的行情日期；未指定時沿用抓取最近有效價格。
 
     Returns:
         :class:`PortfolioResult` 包含所有市值摘要、明細與佔比。
     """
     tw_positions, tw_total_twd, tw_errors = _calc_positions(
-        STOCKS_TW, price_in_base=True, usd_twd_rate=usd_twd_rate
+        STOCKS_TW, price_in_base=True, usd_twd_rate=usd_twd_rate, as_of=as_of
     )
     us_positions, us_total_usd, us_errors = _calc_positions(
-        STOCKS_US, price_in_base=False, usd_twd_rate=usd_twd_rate
+        STOCKS_US, price_in_base=False, usd_twd_rate=usd_twd_rate, as_of=as_of
     )
 
     us_total_twd = us_total_usd * usd_twd_rate
@@ -329,19 +393,12 @@ def fetch_prev_portfolio_total(client: Client) -> Optional[float]:
 # ── 寫入 Notion ────────────────────────────────────────────────────────────────
 
 
-def _safe_number(value: float, default: float = 0.0) -> float:
-    """將 NaN/Inf 替換為 default，確保 Notion API 可接受的數值。
-
-    Args:
-        value: 原始數值。
-        default: NaN/Inf 時的替代值（預設 0.0）。
-
-    Returns:
-        有效的 float 數值。
-    """
-    if math.isnan(value) or math.isinf(value):
-        return default
-    return value
+def _valid_totals(portfolio: PortfolioResult) -> bool:
+    """Reject invalid aggregate values instead of disguising them as zero."""
+    return all(math.isfinite(value) and value >= 0 for value in (
+        portfolio.tw_total_twd, portfolio.us_total_usd,
+        portfolio.us_total_twd, portfolio.grand_total_twd,
+    ))
 
 
 def write_to_notion(
@@ -352,7 +409,7 @@ def write_to_notion(
     """將投資組合結果寫入 Notion Investment DB。
 
     具備防重複寫入保護：同日已存在記錄時直接回傳 True 跳過。
-    Notes 欄位自動帶入：日變動 %、前三大持倉比例、失敗代碼。
+    資料缺漏或數值無效時拒絕寫入；Notes 帶入日變動 %、前三大持倉比例。
 
     Notion DB 欄位（固定，請勿更改）：
         ``Name`` ``Date`` ``Total TWD`` ``TW Total`` ``US Total``
@@ -366,6 +423,10 @@ def write_to_notion(
     Returns:
         寫入成功（或已存在跳過）回傳 True，失敗回傳 False。
     """
+    if portfolio.errors or not _positive_finite(usd_twd_rate) or not _valid_totals(portfolio):
+        logger.error("投資快照不完整或數值無效，拒絕寫入 Notion。")
+        return False
+
     client = get_notion_client(NOTION_API_KEY)
 
     # 防重複寫入：同一天已存在則跳過。
@@ -405,18 +466,15 @@ def write_to_notion(
         )
         note_parts.append(f"前3：{alloc_str}")
 
-    if portfolio.errors:
-        note_parts.append(f"失敗：{', '.join(portfolio.errors)}")
-
     note = " | ".join(note_parts)
 
     properties: Dict[str, object] = {
         "Name":          prop_title(f"Investment {record_date}"),
         "Date":          prop_date(record_date),
-        "Total TWD":     prop_number(_safe_number(portfolio.grand_total_twd)),
-        "TW Total":      prop_number(_safe_number(portfolio.tw_total_twd)),
-        "US Total":      prop_number(_safe_number(portfolio.us_total_twd)),
-        "Exchange Rate": prop_number(_safe_number(usd_twd_rate)),
+        "Total TWD":     prop_number(portfolio.grand_total_twd),
+        "TW Total":      prop_number(portfolio.tw_total_twd),
+        "US Total":      prop_number(portfolio.us_total_twd),
+        "Exchange Rate": prop_number(usd_twd_rate),
         "Notes":         prop_rich_text(note),
     }
 
@@ -484,11 +542,8 @@ def main() -> None:
 
     config.validate_config()
 
-    # 前一個交易日（台股盤後資料通常延遲一天）。
-    # 若「前一天」落在週末，代表當天沒有新的收盤價（yfinance 仍只會回報上個交易日
-    # 的舊資料），寫入會產生誤導性的非交易日紀錄（例如週一執行寫出週日的紀錄，
-    # 內容卻是週五的收盤價）。上個交易日的資料已由前一個工作日的執行涵蓋，故直接
-    # 略過本次寫入，不視為失敗。
+    # 以「昨天」作快照日，所有持股與匯率都只取該日資料，禁止用最新值代替。
+    # 週末目標日直接略過；平日休市或資料缺漏會進入既有失敗流程，而非寫錯日期。
     record_date_obj = date.today() - timedelta(days=1)
     if _is_weekend(record_date_obj):
         logger.info(
@@ -501,8 +556,8 @@ def main() -> None:
     record_date = record_date_obj.isoformat()
 
     # 使用備用機制抓取匯率
-    usd_twd_rate = fetch_usd_twd_rate_with_fallback()
-    if usd_twd_rate is None:
+    usd_twd_rate = fetch_usd_twd_rate_with_fallback(as_of=record_date_obj)
+    if usd_twd_rate is None or not _positive_finite(usd_twd_rate):
         logger.error("無法取得匯率（主要 + 備用來源均失敗），腳本終止。")
         _alert_failure(
             "投資追蹤失敗：無法取得 USD/TWD 匯率（yfinance + Frankfurter 備用來源皆失敗）。"
@@ -510,7 +565,7 @@ def main() -> None:
         append_run("investment_tracker.py", ok=False, wrote_notion=False)
         sys.exit(1)
 
-    portfolio = calculate_portfolio(usd_twd_rate)
+    portfolio = calculate_portfolio(usd_twd_rate, as_of=record_date_obj)
 
     # 全部標的都拿不到價格 → 不寫入毒紀錄（Total TWD=0），告警後以非零結束，
     # 讓 Task Scheduler 記錄失敗，同時避免 dedup 把今天鎖死擋住之後的修正重跑。
@@ -525,11 +580,19 @@ def main() -> None:
         sys.exit(1)
 
     if portfolio.errors:
-        logger.warning("─ 部分標的抓取失敗：%s", portfolio.errors)
+        logger.error("部分標的抓取失敗，拒絕發布不完整總額：%s", portfolio.errors)
         _alert_failure(
             f"投資追蹤部分標的失敗：{', '.join(portfolio.errors)}"
-            "（其餘標的正常處理，詳見 Notion Notes 欄位）。"
+            "（本次未寫入總額，請稍後重跑補齊）。"
         )
+        append_run("investment_tracker.py", ok=False, wrote_notion=False)
+        sys.exit(1)
+
+    if not _valid_totals(portfolio):
+        logger.error("投資快照總額無效，跳過 Notion 寫入。")
+        _alert_failure("投資追蹤失敗：總額數值無效，本次未寫入，請檢查資料後重跑。")
+        append_run("investment_tracker.py", ok=False, wrote_notion=False)
+        sys.exit(1)
 
     # 從 Notion 讀取上一筆資料以計算日變動 %
     if INVESTMENT_DB_ID and INVESTMENT_DB_ID != "placeholder":
@@ -584,6 +647,7 @@ def main() -> None:
             logger.error("✗ 寫入 Notion 失敗")
             _alert_failure(f"Notion Investment DB 寫入失敗（日期：{record_date}）。")
             append_run("investment_tracker.py", ok=False, wrote_notion=False)
+            sys.exit(1)
     else:
         logger.warning("INVESTMENT_DB_ID 尚未設定，跳過 Notion 寫入。")
         append_run("investment_tracker.py", ok=True, wrote_notion=False)
@@ -593,3 +657,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

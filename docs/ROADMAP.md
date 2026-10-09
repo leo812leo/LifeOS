@@ -1,5 +1,55 @@
 # Public roadmap
 
+## Investment snapshot quote-date alignment — 2026-10-09
+
+- Price and USD/TWD requests now use the intended snapshot date. yfinance
+  requests the exact `[date, date + 1 day)` interval and rejects missing or
+  mismatched dates; the historical Frankfurter fallback also verifies its
+  returned date. Missing quotes fail closed instead of substituting a newer
+  market value.
+- The daily run continues to target yesterday and keeps its weekend skip. A
+  weekday market holiday or missing quote now follows the existing failure
+  path; calendar-aware holiday handling and missed-run backfill remain open.
+- Targeted investment tests: 42 passed. Full isolated public suite: 750 passed
+  on Windows Python 3.12.13. Independent code and Python reviews approved the
+  change; no production service was called. GitHub Linux CI run 37991764718
+  passed all 750 tests on implementation head
+  `ee0b17097e4e46a49d217c6709622b181d739142`; later evidence-only edits do not
+  expand that run's test claim.
+- Uses the existing yfinance and Frankfurter sources; no dependency or service
+  was added. This change belongs to the existing investment PR #2; it is not
+  merged or deployed.
+
+## Investment write failure exit status — 2026-10-08
+
+- If the Notion writer reports failure, investment tracking now preserves the
+  existing alert and failed-run ledger entry, then exits with status 1. This
+  lets schedulers and monitoring distinguish a failed write from success;
+  successful writes and the no-database skip path are unchanged.
+- The regression test failed before the fix and passes afterward. The isolated
+  public snapshot passes all 34 investment tests and all 742 offline tests;
+  no production service was called. Independent code and Python reviews passed.
+  GitHub Linux CI run 37687140514 passed all 742 tests; remote blobs match the
+  staged patch. No production service was called.
+- This update is scoped to the existing investment PR #2 and is not merged or
+  deployed.
+
+## Investment snapshot completeness — 2026-10-06
+
+- Reject a portfolio snapshot if any configured holding lacks a valid quote;
+  stop before Notion access, record a failed run and exit with status 1.
+- Treat nonpositive or nonfinite prices/FX as missing data. Invalid primary FX
+  uses the existing fallback. Reject invalid aggregate totals instead of writing
+  zero in their place, including at the direct Notion writer boundary.
+- A failed partial run creates no date record, so a later complete run can write
+  the same date. Existing historical partial records are not modified.
+- Changes use the connector-first foundation in PR #1; validation and the new PR
+  status must be verified separately. No production services are used in tests.
+- Local offline validation passed: 737 original-source tests and 742 sanitized
+  public-snapshot tests. Independent code and Python reviews approved the patch.
+- Historical reconciliation of old partial records and concurrent deduplication
+  remain follow-up work.
+
 ## Connector-first foundation — 2026-10-03
 
 - Add an offline test launcher, temporary runtime paths and guards against
@@ -55,3 +105,4 @@ observability. Keep human GTD tasks separate from machine jobs. Notion can hold
 structured records and actions; Heptabase can hold knowledge and relationships.
 Calendar records actual time commitments. Define one owner per data type before
 adding bidirectional synchronization. These are design directions, not implemented integrations.
+
