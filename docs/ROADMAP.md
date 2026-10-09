@@ -1,5 +1,23 @@
 # Public roadmap
 
+## Investment snapshot quote-date alignment — 2026-10-09
+
+- Price and USD/TWD requests now use the intended snapshot date. yfinance
+  requests the exact `[date, date + 1 day)` interval and rejects missing or
+  mismatched dates; the historical Frankfurter fallback also verifies its
+  returned date. Missing quotes fail closed instead of substituting a newer
+  market value.
+- The daily run continues to target yesterday and keeps its weekend skip. A
+  weekday market holiday or missing quote now follows the existing failure
+  path; calendar-aware holiday handling and missed-run backfill remain open.
+- Targeted investment tests: 42 passed. Full isolated public suite: 750 passed
+  on Windows Python 3.12.13. Independent code and Python reviews approved the
+  change; no production service was called. GitHub CI for the published head
+  must be checked separately.
+- Uses the existing yfinance and Frankfurter sources; no dependency or service
+  was added. This change belongs to the existing investment PR #2; it is not
+  merged or deployed.
+
 ## Investment write failure exit status — 2026-10-08
 
 - If the Notion writer reports failure, investment tracking now preserves the
@@ -27,7 +45,7 @@
   status must be verified separately. No production services are used in tests.
 - Local offline validation passed: 737 original-source tests and 742 sanitized
   public-snapshot tests. Independent code and Python reviews approved the patch.
-- Quote-date alignment, historical reconciliation and concurrent deduplication
+- Historical reconciliation of old partial records and concurrent deduplication
   remain follow-up work.
 
 ## Connector-first foundation — 2026-10-03
