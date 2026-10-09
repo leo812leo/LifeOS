@@ -13,8 +13,9 @@
 - Targeted investment tests: 42 passed. Full isolated public suite: 750 passed
   on Windows Python 3.12.13. Independent code and Python reviews approved the
   change; no production service was called. GitHub Linux CI run 37991764718
-  passed all 750 tests on the code-and-roadmap head; the later evidence-only
-  roadmap commit must be checked separately.
+  passed all 750 tests on implementation head
+  `ee0b17097e4e46a49d217c6709622b181d739142`; later evidence-only edits do not
+  expand that run's test claim.
 - Uses the existing yfinance and Frankfurter sources; no dependency or service
   was added. This change belongs to the existing investment PR #2; it is not
   merged or deployed.
