@@ -40,6 +40,46 @@ class TestFetchPrice:
 
         assert result == pytest.approx(105.5)
 
+    def test_returns_price_for_requested_snapshot_date(self) -> None:
+        snapshot_date = date(2026, 7, 13)
+        mock_hist = pd.DataFrame(
+            {"Close": [100.0, 105.5]},
+            index=pd.to_datetime(["2026-07-13", "2026-07-14"]),
+        )
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = mock_hist
+
+        with patch("scripts.investment_tracker.yf.Ticker", return_value=mock_ticker):
+            result = fetch_price("2330.TW", as_of=snapshot_date)
+
+        assert result == pytest.approx(100.0)
+        mock_ticker.history.assert_called_once_with(
+            start="2026-07-13", end="2026-07-14"
+        )
+
+    def test_does_not_substitute_latest_price_when_snapshot_date_missing(self) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame(
+            {"Close": [105.5]}, index=pd.to_datetime(["2026-07-14"])
+        )
+
+        with patch("scripts.investment_tracker.yf.Ticker", return_value=mock_ticker):
+            result = fetch_price("2330.TW", as_of=date(2026, 7, 13))
+
+        assert result is None
+
+    def test_requested_date_filter_handles_nan_rows_outside_date(self) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame(
+            {"Close": [float("nan"), 100.0]},
+            index=pd.to_datetime(["2026-07-12", "2026-07-13"]),
+        )
+
+        with patch("scripts.investment_tracker.yf.Ticker", return_value=mock_ticker):
+            result = fetch_price("2330.TW", as_of=date(2026, 7, 13))
+
+        assert result == pytest.approx(100.0)
+
     def test_returns_none_when_empty_history(self) -> None:
         mock_ticker = MagicMock()
         mock_ticker.history.return_value = pd.DataFrame()
@@ -72,6 +112,34 @@ class TestFetchUsdTwdRate:
             result = fetch_usd_twd_rate()
 
         assert result == pytest.approx(31.8)
+
+    def test_requests_rate_for_snapshot_date(self) -> None:
+        snapshot_date = date(2026, 7, 13)
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame(
+            {"Close": [31.5, 31.8]},
+            index=pd.to_datetime(["2026-07-13", "2026-07-14"]),
+        )
+
+        with patch("scripts.investment_tracker.yf.Ticker", return_value=mock_ticker):
+            result = fetch_usd_twd_rate(as_of=snapshot_date)
+
+        assert result == pytest.approx(31.5)
+        mock_ticker.history.assert_called_once_with(
+            start="2026-07-13", end="2026-07-14"
+        )
+
+    def test_requested_date_rate_filter_handles_nan_rows(self) -> None:
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame(
+            {"Close": [float("nan"), 31.5]},
+            index=pd.to_datetime(["2026-07-12", "2026-07-13"]),
+        )
+
+        with patch("scripts.investment_tracker.yf.Ticker", return_value=mock_ticker):
+            result = fetch_usd_twd_rate(as_of=date(2026, 7, 13))
+
+        assert result == pytest.approx(31.5)
 
     def test_returns_none_when_empty(self) -> None:
         mock_ticker = MagicMock()
@@ -107,6 +175,46 @@ class TestFetchUsdTwdRateWithFallback:
             result = fetch_usd_twd_rate_with_fallback()
 
         assert result == pytest.approx(31.5)
+
+    def test_fallback_requests_and_validates_snapshot_date(self) -> None:
+        snapshot_date = date(2026, 7, 13)
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "date": "2026-07-13",
+            "base": "USD",
+            "quote": "TWD",
+            "rate": 31.5,
+        }
+
+        with (
+            patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
+            patch("scripts.investment_tracker.requests.get", return_value=mock_resp) as mock_get,
+        ):
+            result = fetch_usd_twd_rate_with_fallback(as_of=snapshot_date)
+
+        assert result == pytest.approx(31.5)
+        mock_get.assert_called_once_with(
+            "https://api.frankfurter.dev/v2/rate/usd/twd",
+            params={"date": "2026-07-13"},
+            timeout=10,
+        )
+
+    def test_fallback_rejects_rate_from_a_different_date(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "date": "2026-07-10",
+            "base": "USD",
+            "quote": "TWD",
+            "rate": 31.5,
+        }
+
+        with (
+            patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
+            patch("scripts.investment_tracker.requests.get", return_value=mock_resp),
+        ):
+            result = fetch_usd_twd_rate_with_fallback(as_of=date(2026, 7, 13))
+
+        assert result is None
 
     def test_returns_none_when_both_fail(self) -> None:
         with (
@@ -200,6 +308,22 @@ class TestCalcPositions:
 
         pos = positions[0]
         assert pos.profit_loss == pytest.approx((200.0 - 150.0) * 10)
+
+    def test_requests_each_position_for_snapshot_date(self) -> None:
+        snapshot_date = date(2026, 7, 13)
+        stock = [StockInfo(symbol="2330.TW", name="X", shares=1, avg_cost=1.0)]
+
+        with patch(
+            "scripts.investment_tracker.fetch_price", return_value=100.0
+        ) as mock_fetch:
+            _calc_positions(
+                stock,
+                price_in_base=True,
+                usd_twd_rate=31.0,
+                as_of=snapshot_date,
+            )
+
+        mock_fetch.assert_called_once_with("2330.TW", as_of=snapshot_date)
 
 
 # ── calculate_portfolio ────────────────────────────────────────────────────────
@@ -613,11 +737,11 @@ class TestMainWriteFailureAlerts:
             patch(
                 "scripts.investment_tracker.fetch_usd_twd_rate_with_fallback",
                 return_value=31.0,
-            ),
+            ) as mock_fx,
             patch(
                 "scripts.investment_tracker.calculate_portfolio",
                 return_value=ok_portfolio,
-            ),
+            ) as mock_calculate,
             patch("scripts.investment_tracker.INVESTMENT_DB_ID", "real-db-id"),
             patch(
                 "scripts.investment_tracker.get_notion_client",
@@ -635,8 +759,11 @@ class TestMainWriteFailureAlerts:
                 main()
 
         assert exc_info.value.code == 1
+        mock_fx.assert_called_once_with(as_of=date(2026, 7, 13))
+        mock_calculate.assert_called_once_with(31.0, as_of=date(2026, 7, 13))
         mock_alert.assert_called_once()
         assert "寫入失敗" in mock_alert.call_args[0][0]
         mock_append_run.assert_called_once_with(
             "investment_tracker.py", ok=False, wrote_notion=False
         )
+
