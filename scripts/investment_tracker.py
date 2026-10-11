@@ -219,8 +219,12 @@ def _fetch_usd_twd_from_frankfurter(as_of: Optional[date] = None) -> Optional[fl
         if as_of is None:
             rate = float(data["rates"]["TWD"])
         else:
-            if data.get("date") != as_of.isoformat():
-                logger.warning("Frankfurter 匯率日期與快照日期不符，拒絕使用")
+            if (
+                data.get("date") != as_of.isoformat()
+                or data.get("base") != "USD"
+                or data.get("quote") != "TWD"
+            ):
+                logger.warning("Frankfurter 匯率日期或幣別與快照要求不符，拒絕使用")
                 return None
             rate = float(data["rate"])
         if not _positive_finite(rate):
