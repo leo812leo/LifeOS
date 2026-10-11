@@ -1,5 +1,19 @@
 # Public roadmap
 
+## Validate historical FX currency pair — 2026-10-12
+
+- The dated Frankfurter fallback now accepts a rate only when the returned
+  date matches the requested snapshot and the response identifies `USD` as
+  base and `TWD` as quote. Missing or mismatched fields fail closed.
+- Test-first regression coverage: four wrong/missing currency-pair cases failed
+  before the fix; 46 investment tests and all 754 isolated public tests passed
+  after it on Windows Python 3.12.13. No live services were called.
+- Independent code and Python reviews approved; no Critical/High findings.
+  The Python 3.9-compatible typing style is retained. Malformed payload and
+  invalid numeric cases are optional follow-up coverage.
+- This remains within investment PR #2; not merged or deployed. Awaiting fresh
+  GitHub Linux CI for the updated head.
+
 ## Investment snapshot quote-date alignment — 2026-10-09
 
 - Price and USD/TWD requests now use the intended snapshot date. yfinance
