@@ -2,7 +2,7 @@
 
 from datetime import date
 from dataclasses import replace as dc_replace
-from typing import List
+from typing import List, Optional
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -207,6 +207,29 @@ class TestFetchUsdTwdRateWithFallback:
             "quote": "TWD",
             "rate": 31.5,
         }
+
+        with (
+            patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
+            patch("scripts.investment_tracker.requests.get", return_value=mock_resp),
+        ):
+            result = fetch_usd_twd_rate_with_fallback(as_of=date(2026, 7, 13))
+
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "base, quote",
+        [("EUR", "TWD"), ("USD", "JPY"), (None, "TWD"), ("USD", None)],
+    )
+    def test_fallback_rejects_wrong_or_missing_currency_pair(
+        self, base: Optional[str], quote: Optional[str]
+    ) -> None:
+        mock_resp = MagicMock()
+        payload = {"date": "2026-07-13", "base": base, "quote": quote, "rate": 31.5}
+        if base is None:
+            payload.pop("base")
+        if quote is None:
+            payload.pop("quote")
+        mock_resp.json.return_value = payload
 
         with (
             patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
