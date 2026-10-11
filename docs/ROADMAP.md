@@ -11,8 +11,9 @@
 - Independent code and Python reviews approved; no Critical/High findings.
   The Python 3.9-compatible typing style is retained. Malformed payload and
   invalid numeric cases are optional follow-up coverage.
-- This remains within investment PR #2; not merged or deployed. Awaiting fresh
-  GitHub Linux CI for the updated head.
+- GitHub Linux CI run 38175181182 passed all 754 tests on code/documentation
+  head `cd6c53a1dab0b1b7bbc9dbcb343182d944f31611`; no production service was
+  called. This remains within investment PR #2; not merged or deployed.
 
 ## Investment snapshot quote-date alignment — 2026-10-09
 
