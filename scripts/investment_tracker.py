@@ -226,7 +226,11 @@ def _fetch_usd_twd_from_frankfurter(as_of: Optional[date] = None) -> Optional[fl
             ):
                 logger.warning("Frankfurter 匯率日期或幣別與快照要求不符，拒絕使用")
                 return None
-            rate = float(data["rate"])
+            raw_rate = data.get("rate")
+            if isinstance(raw_rate, bool) or not isinstance(raw_rate, (int, float)):
+                logger.warning("Frankfurter 備援匯率型別無效，拒絕使用")
+                return None
+            rate = float(raw_rate)
         if not _positive_finite(rate):
             logger.warning("Frankfurter 備用匯率無效，視為資料缺漏")
             return None
