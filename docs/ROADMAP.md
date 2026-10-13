@@ -1,5 +1,19 @@
 # Public roadmap
 
+## Reject non-numeric historical FX rates — 2026-10-14
+
+- For dated Frankfurter responses, only JSON numeric `rate` values are now
+  accepted; booleans (which Python otherwise converts to `1.0`) and numeric
+  strings fail closed. Positive finite validation remains in place, and the
+  latest-rate route is unchanged.
+- Test-first regression: `true` and `"31.5"` both failed before the guard.
+  Afterward, 48 investment tests and all 756 isolated public tests passed on
+  Windows Python 3.12.13. The original local source suite passed 737 tests.
+- Independent code and Python reviewers approved with no findings. Tests use
+  mocks; no live service was called. GitHub Linux CI for the updated PR head is
+  pending. This is a small finance-integrity fix during the pre-race freeze,
+  not a new integration; no merge or deployment.
+
 ## Validate historical FX currency pair — 2026-10-12
 
 - The dated Frankfurter fallback now accepts a rate only when the returned
