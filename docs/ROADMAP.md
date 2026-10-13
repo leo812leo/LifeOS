@@ -10,8 +10,9 @@
   Afterward, 48 investment tests and all 756 isolated public tests passed on
   Windows Python 3.12.13. The original local source suite passed 737 tests.
 - Independent code and Python reviewers approved with no findings. Tests use
-  mocks; no live service was called. GitHub Linux CI for the updated PR head is
-  pending. This is a small finance-integrity fix during the pre-race freeze,
+  mocks; no live service was called. GitHub Linux CI run 38467804723 passed all
+  756 tests on head `8945173dab420a38b083ad6200b203bcf4e24dda`. This is a small
+  finance-integrity fix during the pre-race freeze,
   not a new integration; no merge or deployment.
 
 ## Validate historical FX currency pair — 2026-10-12
