@@ -1,5 +1,85 @@
 # Public roadmap
 
+## Reject non-numeric historical FX rates — 2026-10-14
+
+- For dated Frankfurter responses, only JSON numeric `rate` values are now
+  accepted; booleans (which Python otherwise converts to `1.0`) and numeric
+  strings fail closed. Positive finite validation remains in place, and the
+  latest-rate route is unchanged.
+- Test-first regression: `true` and `"31.5"` both failed before the guard.
+  Afterward, 48 investment tests and all 756 isolated public tests passed on
+  Windows Python 3.12.13. The original local source suite passed 737 tests.
+- Independent code and Python reviewers approved with no findings. Tests use
+  mocks; no live service was called. GitHub Linux CI run 38467804723 passed all
+  756 tests on head `8945173dab420a38b083ad6200b203bcf4e24dda`. This is a small
+  finance-integrity fix during the pre-race freeze,
+  not a new integration; no merge or deployment.
+
+## Validate historical FX currency pair — 2026-10-12
+
+- The dated Frankfurter fallback now accepts a rate only when the returned
+  date matches the requested snapshot and the response identifies `USD` as
+  base and `TWD` as quote. Missing or mismatched fields fail closed.
+- Test-first regression coverage: four wrong/missing currency-pair cases failed
+  before the fix; 46 investment tests and all 754 isolated public tests passed
+  after it on Windows Python 3.12.13. No live services were called.
+- Independent code and Python reviews approved; no Critical/High findings.
+  The Python 3.9-compatible typing style is retained. Malformed payload and
+  invalid numeric cases are optional follow-up coverage.
+- GitHub Linux CI run 38175181182 passed all 754 tests on code/documentation
+  head `cd6c53a1dab0b1b7bbc9dbcb343182d944f31611`; no production service was
+  called. This remains within investment PR #2; not merged or deployed.
+
+## Investment snapshot quote-date alignment — 2026-10-09
+
+- Price and USD/TWD requests now use the intended snapshot date. yfinance
+  requests the exact `[date, date + 1 day)` interval and rejects missing or
+  mismatched dates; the historical Frankfurter fallback also verifies its
+  returned date. Missing quotes fail closed instead of substituting a newer
+  market value.
+- The daily run continues to target yesterday and keeps its weekend skip. A
+  weekday market holiday or missing quote now follows the existing failure
+  path; calendar-aware holiday handling and missed-run backfill remain open.
+- Targeted investment tests: 42 passed. Full isolated public suite: 750 passed
+  on Windows Python 3.12.13. Independent code and Python reviews approved the
+  change; no production service was called. GitHub Linux CI run 37991764718
+  passed all 750 tests on implementation head
+  `ee0b17097e4e46a49d217c6709622b181d739142`; later evidence-only edits do not
+  expand that run's test claim.
+- Uses the existing yfinance and Frankfurter sources; no dependency or service
+  was added. This change belongs to the existing investment PR #2; it is not
+  merged or deployed.
+
+## Investment write failure exit status — 2026-10-08
+
+- If the Notion writer reports failure, investment tracking now preserves the
+  existing alert and failed-run ledger entry, then exits with status 1. This
+  lets schedulers and monitoring distinguish a failed write from success;
+  successful writes and the no-database skip path are unchanged.
+- The regression test failed before the fix and passes afterward. The isolated
+  public snapshot passes all 34 investment tests and all 742 offline tests;
+  no production service was called. Independent code and Python reviews passed.
+  GitHub Linux CI run 37687140514 passed all 742 tests; remote blobs match the
+  staged patch. No production service was called.
+- This update is scoped to the existing investment PR #2 and is not merged or
+  deployed.
+
+## Investment snapshot completeness — 2026-10-06
+
+- Reject a portfolio snapshot if any configured holding lacks a valid quote;
+  stop before Notion access, record a failed run and exit with status 1.
+- Treat nonpositive or nonfinite prices/FX as missing data. Invalid primary FX
+  uses the existing fallback. Reject invalid aggregate totals instead of writing
+  zero in their place, including at the direct Notion writer boundary.
+- A failed partial run creates no date record, so a later complete run can write
+  the same date. Existing historical partial records are not modified.
+- Changes use the connector-first foundation in PR #1; validation and the new PR
+  status must be verified separately. No production services are used in tests.
+- Local offline validation passed: 737 original-source tests and 742 sanitized
+  public-snapshot tests. Independent code and Python reviews approved the patch.
+- Historical reconciliation of old partial records and concurrent deduplication
+  remain follow-up work.
+
 ## Connector-first foundation — 2026-10-03
 
 - Add an offline test launcher, temporary runtime paths and guards against
@@ -55,3 +135,4 @@ observability. Keep human GTD tasks separate from machine jobs. Notion can hold
 structured records and actions; Heptabase can hold knowledge and relationships.
 Calendar records actual time commitments. Define one owner per data type before
 adding bidirectional synchronization. These are design directions, not implemented integrations.
+
