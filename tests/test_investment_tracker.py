@@ -239,6 +239,24 @@ class TestFetchUsdTwdRateWithFallback:
 
         assert result is None
 
+    @pytest.mark.parametrize("rate", [True, "31.5"])
+    def test_fallback_rejects_non_numeric_rate_types(self, rate: object) -> None:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "date": "2026-07-13",
+            "base": "USD",
+            "quote": "TWD",
+            "rate": rate,
+        }
+
+        with (
+            patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
+            patch("scripts.investment_tracker.requests.get", return_value=mock_resp),
+        ):
+            result = fetch_usd_twd_rate_with_fallback(as_of=date(2026, 7, 13))
+
+        assert result is None
+
     def test_returns_none_when_both_fail(self) -> None:
         with (
             patch("scripts.investment_tracker.fetch_usd_twd_rate", return_value=None),
