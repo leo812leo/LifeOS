@@ -550,12 +550,17 @@ def _activity_exists_in_notion(client: object, activity_id: int) -> bool:
 
     Returns:
         已存在回傳 True。
+
+    Raises:
+        NotionQueryError: 查詢失敗，不能判定活動是否存在。
     """
     filter_dict = {
         "property": "Activity ID",
         "number": {"equals": activity_id},
     }
-    pages = query_pages(client, ACTIVITY_DB_ID, filter_dict=filter_dict, page_size=1)
+    pages = query_pages(
+        client, ACTIVITY_DB_ID, filter_dict=filter_dict, page_size=1, raise_on_error=True
+    )
     return len(pages) > 0
 
 
@@ -590,7 +595,14 @@ def write_activity_to_notion(activity: ActivityData) -> Optional[bool]:
     # Activity DB 在獨立 workspace，須用專屬 key（get_activity_api_key，2026-07 事故教訓）
     client = get_notion_client(get_activity_api_key())
 
-    if _activity_exists_in_notion(client, activity.activity_id):
+    # 查詢失敗不等於活動不存在；無法確認時停止寫入，避免建立重複活動。
+    try:
+        already_exists = _activity_exists_in_notion(client, activity.activity_id)
+    except NotionQueryError:
+        logger.error("查詢 Notion 既有活動失敗，為避免重複寫入，本次跳過寫入。")
+        return False
+
+    if already_exists:
         logger.info("活動已存在（Activity ID=%s），跳過寫入。", activity.activity_id)
         return None
 
