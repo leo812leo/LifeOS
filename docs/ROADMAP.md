@@ -76,3 +76,17 @@ adding bidirectional synchronization. These are design directions, not implement
   configuration or history. Tests use mocks; no live services were called.
   Source validation does not establish a live-service repair or replay any
   historical activity. No merge, migration or scheduler change is included.
+
+## Confirmed feedback writes and reply failures — 2026-10-18
+
+- A confirmed Notion update followed by a Telegram reply error no longer adds
+  false pending feedback or attempts a second reply. Metric and fuel handlers
+  retain their existing behavior for errors before a confirmed write. The
+  post-write error log contains only the exception class.
+- Test-first regression: 6 failed / 74 passed, then all 80 Telegram tests passed.
+  Independent code and Python reviews approved. The complete local source
+  passes 791 isolated tests; the public snapshot passes 764. No live service
+  was called. The earlier 749-test run above covers the preceding source head.
+- Existing pending records and ambiguous write outcomes remain separate work.
+  This adds two module/test files to the same review scope (seven files total
+  relative to PR #1), with no replay, storage migration or scheduler changes.

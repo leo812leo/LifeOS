@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Awaitable, Callable, List, Type
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -424,6 +425,98 @@ class TestCmdFuel:
 
         mock_client.assert_not_called()
         update.message.reply_text.assert_not_awaited()
+
+
+_METRIC_COMMAND_CASES = [
+    pytest.param(cmd_rpe, ["7", "SYNTHETIC_PRIVATE_NOTES"], id="rpe"),
+    pytest.param(cmd_niggle, ["4", "SYNTHETIC_PRIVATE_NOTES"], id="niggle"),
+    pytest.param(cmd_fuel, ["45", "4", "SYNTHETIC_PRIVATE_NOTES"], id="fuel"),
+]
+
+
+class TestConfirmedNotionWrite:
+    @pytest.mark.parametrize("command,args", _METRIC_COMMAND_CASES)
+    @pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+    def test_failed_reply_after_confirmed_write_never_creates_pending(
+        self,
+        command: Callable[..., Awaitable[None]],
+        args: List[str],
+        error_type: Type[Exception],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        update, context = _make_update_and_context(args)
+        error_marker = "SYNTHETIC_SENSITIVE_REPLY_ERROR"
+        # A second reply would succeed, exposing unwanted retries as assertions
+        # rather than hiding the false-pending bug behind another exception.
+        update.message.reply_text = AsyncMock(
+            side_effect=[error_type(error_marker), None]
+        )
+        with (
+            patch("config.get_activity_api_key", return_value="fake-key"),
+            patch("notion_client_helper.get_notion_client", return_value=MagicMock()),
+            patch(
+                "scripts.telegram_bot._find_today_activity_page",
+                return_value=_today_page(),
+            ),
+            patch(
+                "notion_client_helper.update_page", return_value={"id": "page-today"}
+            ) as mock_write,
+            patch("scripts.telegram_bot._append_pending_log") as mock_pending,
+        ):
+            _run(command(update, context))
+
+        mock_write.assert_called_once()
+        update.message.reply_text.assert_awaited_once()
+        mock_pending.assert_not_called()
+        assert "已寫入 Notion" in _reply_text(update)
+        records = [
+            record for record in caplog.records
+            if record.name == "scripts.telegram_bot"
+        ]
+        assert len(records) == 1
+        assert records[0].getMessage() == (
+            "Notion 更新已確認，但 Telegram 回覆失敗：" + error_type.__name__
+        )
+        assert error_marker not in caplog.text
+        assert "SYNTHETIC_PRIVATE_NOTES" not in caplog.text
+        assert _reply_text(update) not in caplog.text
+
+    @pytest.mark.parametrize("command,args", _METRIC_COMMAND_CASES)
+    @pytest.mark.parametrize("outcome", ["confirmed", "none", "exception"])
+    def test_normal_reply_preserves_success_and_pre_write_failure_behaviors(
+        self,
+        command: Callable[..., Awaitable[None]],
+        args: List[str],
+        outcome: str,
+    ) -> None:
+        update, context = _make_update_and_context(args)
+        with (
+            patch("config.get_activity_api_key", return_value="fake-key"),
+            patch("notion_client_helper.get_notion_client", return_value=MagicMock()),
+            patch(
+                "scripts.telegram_bot._find_today_activity_page",
+                return_value=_today_page(),
+            ),
+            patch(
+                "notion_client_helper.update_page",
+                return_value={"id": "page-today"} if outcome == "confirmed" else None,
+                side_effect=(
+                    RuntimeError("synthetic pre-write failure")
+                    if outcome == "exception" else None
+                ),
+            ) as mock_write,
+            patch("scripts.telegram_bot._append_pending_log") as mock_pending,
+        ):
+            _run(command(update, context))
+
+        mock_write.assert_called_once()
+        update.message.reply_text.assert_awaited_once()
+        if outcome == "confirmed":
+            assert "已寫入 Notion" in _reply_text(update)
+            mock_pending.assert_not_called()
+        else:
+            assert "寫入失敗" in _reply_text(update)
+            mock_pending.assert_called_once()
 
 
 # ── T08: chat_id 白名單（輪詢模式授權）───────────────────────────────────────
