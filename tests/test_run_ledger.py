@@ -10,8 +10,12 @@
 """
 
 import sys
+import tracemalloc
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any, Optional
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -131,6 +135,91 @@ class TestReadRecentRuns:
         assert len(records) == 2
         assert records[-1]["script"] == "script4.py"
 
+    @pytest.mark.parametrize("limit", [0, -1, -1000])
+    def test_non_positive_limits_return_no_records(
+        self, tmp_path, monkeypatch, limit: int
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            json.dumps({"script": "a.py"}) + "\n", encoding="utf-8"
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        assert read_recent_runs(limit=limit) == []
+
+    def test_streams_file_instead_of_loading_all_text(self, tmp_path, monkeypatch) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            "\n".join(json.dumps({"script": f"{i}.py"}) for i in range(3)) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        def fail_read_text(*args, **kwargs) -> None:
+            raise AssertionError("reader should stream rather than read the whole file")
+
+        monkeypatch.setattr(Path, "read_text", fail_read_text)
+        records = read_recent_runs(limit=2)
+
+        assert [record["script"] for record in records] == ["1.py", "2.py"]
+
+    def test_tail_read_keeps_memory_bounded(self, tmp_path, monkeypatch) -> None:
+        """A small tail must not retain the multi-megabyte source file."""
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        with ledger_path.open("w", encoding="utf-8") as ledger_file:
+            for index in range(5000):
+                ledger_file.write(
+                    json.dumps({"script": f"{index}.py", "padding": "x" * 1024}) + "\n"
+                )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        tracemalloc.start()
+        try:
+            records = read_recent_runs(limit=2)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert [record["script"] for record in records] == ["4998.py", "4999.py"]
+        # The file exceeds 5 MB; 1 MB leaves ample room for buffered IO/JSON.
+        assert peak_bytes < 1_000_000
+
+    @pytest.mark.parametrize("script", [None, "a.py"])
+    def test_skips_valid_json_values_that_are_not_objects(
+        self, tmp_path, monkeypatch, script: Optional[str]
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            "null\n[]\n1\ntrue\n\"text\"\n" + json.dumps({"script": "a.py"}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        assert read_recent_runs(script=script) == [{"script": "a.py"}]
+
+    def test_limit_applies_before_filtering_and_skipping_invalid_lines(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            json.dumps({"script": "a.py", "old": True}) + "\n"
+            + json.dumps({"script": "b.py"}) + "\n"
+            + "not-json\n\nnull\n"
+            + json.dumps({"script": "a.py", "old": False}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        assert read_recent_runs(script="a.py", limit=5) == [
+            {"script": "a.py", "old": False}
+        ]
+
+    def test_read_failure_returns_empty_list(self, tmp_path, monkeypatch) -> None:
+        # Opening a directory as a text file fails on Windows and POSIX alike.
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", tmp_path)
+
+        assert read_recent_runs() == []
+
 
 # ── last_success_time ─────────────────────────────────────────────────────────
 
@@ -156,3 +245,53 @@ class TestLastSuccessTime:
 
         result = last_success_time("health_tracker.py")
         assert isinstance(result, datetime)
+
+    @pytest.mark.parametrize("ok", ["false", "true", 1, 2, False, None])
+    def test_only_boolean_true_is_accepted_as_success(
+        self, tmp_path, monkeypatch, ok: Any
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            json.dumps({"script": "a.py", "ok": True,
+                        "logged_at": "2026-10-18T12:30:00"}) + "\n"
+            + json.dumps({"script": "a.py", "ok": ok,
+                          "logged_at": "2030-01-01T00:00:00"}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        assert last_success_time("a.py") == datetime(2026, 10, 18, 12, 30)
+
+    @pytest.mark.parametrize("logged_at", [None, 123, [], {}, True, "", "not-a-date"])
+    @pytest.mark.parametrize("with_valid_success", [False, True])
+    def test_invalid_success_timestamps_are_skipped(
+        self, tmp_path, monkeypatch, logged_at: Any, with_valid_success: bool
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        records = [{"script": "a.py", "ok": True, "logged_at": logged_at}]
+        if with_valid_success:
+            records.append({"script": "a.py", "ok": True,
+                            "logged_at": "2026-10-18T12:30:00"})
+        ledger_path.write_text(
+            "\n".join(json.dumps(record) for record in records) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        expected = datetime(2026, 10, 18, 12, 30) if with_valid_success else None
+        assert last_success_time("a.py") == expected
+
+    def test_returns_latest_timestamp_even_when_file_order_differs(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        ledger_path = tmp_path / "run_ledger.jsonl"
+        ledger_path.write_text(
+            json.dumps({"script": "a.py", "ok": True,
+                        "logged_at": "2026-10-18T12:30:00"}) + "\n"
+            + json.dumps({"script": "a.py", "ok": True,
+                          "logged_at": "2026-10-17T12:30:00"}) + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("utils.run_ledger._RUN_LEDGER_PATH", ledger_path)
+
+        assert last_success_time("a.py") == datetime(2026, 10, 18, 12, 30)

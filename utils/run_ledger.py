@@ -15,6 +15,7 @@ Tier-1 管線是否 48 小時無成功紀錄。
 """
 
 import json
+from collections import deque
 from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
@@ -61,28 +62,32 @@ def read_recent_runs(script: Optional[str] = None, limit: int = 1000) -> List[di
 
     Args:
         script: 只回傳這個腳本名稱的紀錄；``None`` 回傳全部腳本。
-        limit: 最多回傳檔案末尾的 N 行（避免帳本無限增長時一次讀爆記憶體）。
+        limit: 僅保留檔案末尾的 N 行，再解析與過濾；非正值回傳空清單。
+            串流掃描檔案，記憶體只保留末尾 N 行，不隨帳本總行數增長。
 
     Returns:
-        dict 清單，依檔案內順序（舊到新）。檔案不存在、讀取失敗、或無法解析
-        的行一律略過，絕不拋出例外（供 daily_adjust / watchdog 安心呼叫）。
+        dict 清單，依檔案內順序（舊到新）。空白、無法解析及非 JSON 物件的行
+        一律略過；檔案不存在或讀取失敗時回傳空清單。
     """
-    if not _RUN_LEDGER_PATH.exists():
+    if limit <= 0 or not _RUN_LEDGER_PATH.exists():
         return []
 
     try:
-        lines = _RUN_LEDGER_PATH.read_text(encoding="utf-8").strip().splitlines()
+        with _RUN_LEDGER_PATH.open("r", encoding="utf-8") as ledger_file:
+            lines = deque(ledger_file, maxlen=limit)
     except Exception as exc:
         logger.warning("run_ledger 讀取失敗（忽略）：%s", exc)
         return []
 
     records: List[dict] = []
-    for line in lines[-limit:]:
+    for line in lines:
         if not line.strip():
             continue
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
             continue
         if script is None or record.get("script") == script:
             records.append(record)
@@ -90,20 +95,21 @@ def read_recent_runs(script: Optional[str] = None, limit: int = 1000) -> List[di
 
 
 def last_success_time(script: str) -> Optional[datetime]:
-    """回傳指定腳本最後一次成功（``ok=True``）執行的時間。
+    """回傳指定腳本最後一次成功（JSON ``ok: true``）執行的時間。
 
     Args:
         script: 腳本檔名。
 
     Returns:
-        最後一次成功執行的 ``logged_at`` 時間；查無成功紀錄時回傳 ``None``。
+        有效成功紀錄中最大的 ``logged_at`` 時間；忽略非布林成功旗標及無效
+        ISO 格式時間字串，查無有效成功紀錄時回傳 ``None``。
     """
     timestamps: List[datetime] = []
     for record in read_recent_runs(script):
-        if not record.get("ok"):
+        if record.get("ok") is not True:
             continue
         logged_at = record.get("logged_at")
-        if not logged_at:
+        if not isinstance(logged_at, str):
             continue
         try:
             timestamps.append(datetime.fromisoformat(logged_at))

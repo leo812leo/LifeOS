@@ -4,12 +4,14 @@ from typing import Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
+from notion_client import APIErrorCode, APIResponseError
 
 from models import ActivityData
 from notion_client_helper import NotionQueryError
 from scripts.health_tracker import (
     HealthData,
     SleepData,
+    _activity_exists_in_notion,
     collect_health_data,
     fetch_activities_for_date,
     fetch_body_battery,
@@ -407,6 +409,19 @@ class TestMapGarminActivity:
 # ── write_activity_to_notion（T19：防重複 + Notion create 參數）─────────────
 
 
+@pytest.fixture(params=["runtime", "api"])
+def failing_activity_query_client(request: pytest.FixtureRequest) -> MagicMock:
+    """Fail at the real query helper's IO boundary, never at the dedup wrapper."""
+    client = MagicMock()
+    if request.param == "api":
+        client.request.side_effect = APIResponseError(
+            MagicMock(), "synthetic query failure", APIErrorCode.InternalServerError
+        )
+    else:
+        client.request.side_effect = RuntimeError("synthetic query failure")
+    return client
+
+
 class TestWriteActivityToNotion:
     _ACTIVITY = ActivityData(
         activity_id=123456789,
@@ -427,6 +442,75 @@ class TestWriteActivityToNotion:
         vo2max=42,
         training_load=85.0,
     )
+
+    def test_lookup_requires_query_errors_to_propagate(self) -> None:
+        client = MagicMock()
+        with (
+            patch("scripts.health_tracker.ACTIVITY_DB_ID", "fake-activity-db"),
+            patch("scripts.health_tracker.query_pages", return_value=[]) as mock_query,
+        ):
+            assert _activity_exists_in_notion(client, 123456789) is False
+
+        mock_query.assert_called_once_with(
+            client,
+            "fake-activity-db",
+            filter_dict={"property": "Activity ID", "number": {"equals": 123456789}},
+            page_size=1,
+            raise_on_error=True,
+        )
+
+    def test_query_failure_returns_false_without_creating_page(
+        self, failing_activity_query_client: MagicMock
+    ) -> None:
+        """The real query_pages helper must not turn failed lookup into absence."""
+        with (
+            patch("scripts.health_tracker.ACTIVITY_DB_ID", "fake-activity-db"),
+            patch("scripts.health_tracker.get_activity_api_key", return_value="fake-key"),
+            patch(
+                "scripts.health_tracker.get_notion_client",
+                return_value=failing_activity_query_client,
+            ),
+            patch(
+                "scripts.health_tracker.create_page", return_value={"id": "fake-page"}
+            ) as mock_create,
+            patch("scripts.health_tracker.logger.error") as mock_error,
+        ):
+            result = write_activity_to_notion(self._ACTIVITY)
+
+        assert result is False
+        mock_create.assert_not_called()
+        failing_activity_query_client.request.assert_called_once_with(
+            path="databases/fake-activity-db/query",
+            method="POST",
+            body={
+                "page_size": 1,
+                "filter": {"property": "Activity ID", "number": {"equals": 123456789}},
+            },
+        )
+        mock_error.assert_called_once_with(
+            "查詢 Notion 既有活動失敗，為避免重複寫入，本次跳過寫入。"
+        )
+
+    @pytest.mark.parametrize("exists", [False, True])
+    def test_successful_real_query_preserves_create_and_skip_results(
+        self, exists: bool
+    ) -> None:
+        client = MagicMock()
+        client.request.return_value = {"results": [{"id": "existing"}] if exists else []}
+        with (
+            patch("scripts.health_tracker.get_activity_api_key", return_value="fake-key"),
+            patch("scripts.health_tracker.get_notion_client", return_value=client),
+            patch(
+                "scripts.health_tracker.create_page", return_value={"id": "new-page"}
+            ) as mock_create,
+        ):
+            result = write_activity_to_notion(self._ACTIVITY)
+
+        assert result is (None if exists else True)
+        if exists:
+            mock_create.assert_not_called()
+        else:
+            mock_create.assert_called_once()
 
     def test_creates_page_with_correct_properties_for_new_activity(self) -> None:
         """驗收 1：mock 一筆跑步活動 → Notion create 參數正確。"""
@@ -505,6 +589,32 @@ class TestWriteActivityToNotion:
 
 
 class TestSyncActivities:
+    def test_query_failure_marks_activity_ledger_failed_without_writing(
+        self, failing_activity_query_client: MagicMock
+    ) -> None:
+        with (
+            patch("scripts.health_tracker.ACTIVITY_DB_ID", "fake-activity-db"),
+            patch("scripts.health_tracker.get_activity_api_key", return_value="fake-key"),
+            patch(
+                "scripts.health_tracker.get_notion_client",
+                return_value=failing_activity_query_client,
+            ),
+            patch(
+                "scripts.health_tracker.fetch_activities_for_date",
+                return_value=[_RAW_RUN_ACTIVITY],
+            ),
+            patch(
+                "scripts.health_tracker.create_page", return_value={"id": "fake-page"}
+            ) as mock_create,
+            patch("scripts.health_tracker.append_run") as mock_append,
+        ):
+            sync_activities(MagicMock(), "2024-01-15")
+
+        mock_create.assert_not_called()
+        mock_append.assert_called_once_with(
+            "health_tracker.activities", ok=False, wrote_notion=False
+        )
+
     def test_no_activity_day_is_not_a_failure(self) -> None:
         """跑休日（無活動列）視為正常結束，不告警、ok=True。"""
         with (
@@ -646,6 +756,43 @@ class TestFetchActivitiesForDate:
 
 
 class TestMainActivitySyncIsolation:
+    def test_activity_lookup_failure_leaves_health_success_intact(
+        self, failing_activity_query_client: MagicMock
+    ) -> None:
+        with (
+            patch("scripts.health_tracker.config.validate_config", return_value=True),
+            patch("scripts.health_tracker.garmin_login", return_value=MagicMock()),
+            patch(
+                "scripts.health_tracker.collect_health_data",
+                return_value=HealthData(steps=8000, resting_heart_rate=55),
+            ),
+            patch("scripts.health_tracker.HEALTH_DB_ID", "fake-health-db"),
+            patch("scripts.health_tracker.write_to_notion", return_value=True) as mock_health,
+            patch("scripts.health_tracker.ACTIVITY_DB_ID", "fake-activity-db"),
+            patch("scripts.health_tracker.get_activity_api_key", return_value="fake-key"),
+            patch(
+                "scripts.health_tracker.get_notion_client",
+                return_value=failing_activity_query_client,
+            ),
+            patch(
+                "scripts.health_tracker.fetch_activities_for_date",
+                return_value=[_RAW_RUN_ACTIVITY],
+            ),
+            patch(
+                "scripts.health_tracker.create_page", return_value={"id": "fake-page"}
+            ) as mock_create,
+            patch("scripts.health_tracker.append_run") as mock_append,
+            patch("scripts.health_tracker._alert_failure") as mock_alert,
+        ):
+            main()
+
+        mock_health.assert_called_once()
+        mock_create.assert_not_called()
+        mock_alert.assert_not_called()
+        calls = {call.args[0]: call.kwargs for call in mock_append.call_args_list}
+        assert calls["health_tracker.py"] == {"ok": True, "wrote_notion": True}
+        assert calls["health_tracker.activities"] == {"ok": False, "wrote_notion": False}
+
     def test_activity_sync_exception_does_not_block_health_write(self) -> None:
         """驗收 3（端到端）：活動 API 拋例外 → 健康數據照常寫入。"""
         health = HealthData(steps=8000, resting_heart_rate=55)
