@@ -259,21 +259,24 @@ class TestWriteToNotion:
 
 
 class TestMainKeyFieldsMissing:
-    def test_no_write_alerts_and_exits_nonzero_when_all_key_fields_none(self) -> None:
-        """steps/sleep/rhr 全為 None（手錶尚未同步）→ 不寫 Notion、告警、exit != 0。"""
+    def test_missing_health_still_syncs_activity_and_exits_nonzero(self) -> None:
+        """健康缺值時仍同步活動，健康帳本保留失敗狀態。"""
         empty_health = HealthData()  # 所有欄位皆為 None
+        garmin = MagicMock()
 
         with (
             patch("scripts.health_tracker.config.validate_config", return_value=True),
             patch(
-                "scripts.health_tracker.garmin_login", return_value=MagicMock()
+                "scripts.health_tracker.garmin_login", return_value=garmin
             ),
             patch(
                 "scripts.health_tracker.collect_health_data",
                 return_value=empty_health,
-            ),
+            ) as mock_collect,
             patch("scripts.health_tracker.write_to_notion") as mock_write,
             patch("scripts.health_tracker._alert_failure") as mock_alert,
+            patch("scripts.health_tracker.append_run") as mock_ledger,
+            patch("scripts.health_tracker.sync_activities") as mock_activity,
         ):
             with pytest.raises(SystemExit) as exc_info:
                 main()
@@ -281,7 +284,8 @@ class TestMainKeyFieldsMissing:
         assert exc_info.value.code != 0
         mock_write.assert_not_called()
         mock_alert.assert_called_once()
-        assert "Garmin 尚未同步" in mock_alert.call_args[0][0]
+        mock_ledger.assert_called_once_with("health_tracker.py", ok=False, wrote_notion=False)
+        mock_activity.assert_called_once_with(garmin, mock_collect.call_args.args[1])
 
     def test_writes_when_at_least_one_key_field_present(self) -> None:
         """只要 steps/sleep/rhr 其中一項有值，就照常嘗試寫入（不視為失敗）。"""

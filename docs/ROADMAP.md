@@ -1,5 +1,13 @@
 # Public roadmap
 
+## Independent activity sync — 2026-11-09
+
+- After Garmin login, the tracker checks for activities even when Garmin returns
+  no steps, sleep or resting heart rate. The health task records its failure
+  and exits with a nonzero status after the activity check.
+- An offline regression test covers the shared Garmin session, skipped health
+  write and separate activity call.
+
 ## Connector-first foundation — 2026-10-03
 
 - Add an offline test launcher, temporary runtime paths and guards against

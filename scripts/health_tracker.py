@@ -760,8 +760,7 @@ def main() -> None:
     logger.info("─ 身體電量：%s",    str(health.body_battery) if health.body_battery else "N/A")
     logger.info("─ 活動消耗：%s",    f"{health.calories} kcal" if health.calories else "N/A")
 
-    # 關鍵欄位（步數、睡眠、安靜心率）全為 None → 手錶尚未同步，寫入近空紀錄
-    # 只會讓 dedup 永久擋住當日補值。不寫、告警，讓使用者稍後手動重跑。
+    # 缺少關鍵指標時保留失敗紀錄，讓補齊後的同步仍能寫入該日。
     key_fields_missing = (
         health.steps is None
         and health.sleep_hours is None
@@ -769,13 +768,11 @@ def main() -> None:
     )
     if key_fields_missing:
         logger.error(
-            "關鍵欄位（步數/睡眠/安靜心率）全為 None，Garmin 尚未同步，跳過寫入。"
+            "關鍵欄位（步數/睡眠/安靜心率）全為 None，跳過健康寫入。"
         )
-        _alert_failure(f"Garmin 尚未同步，今日稍後手動重跑（日期：{target_date}）。")
+        _alert_failure(f"Garmin 未回傳健康指標（{target_date}）。請確認 Garmin Connect 的資料。")
         append_run("health_tracker.py", ok=False, wrote_notion=False)
-        sys.exit(1)
-
-    if HEALTH_DB_ID and HEALTH_DB_ID != "placeholder":
+    elif HEALTH_DB_ID and HEALTH_DB_ID != "placeholder":
         success = write_to_notion(health, target_date)
         if success:
             logger.info("✓ 已成功寫入 Notion Health DB")
@@ -788,8 +785,11 @@ def main() -> None:
         logger.warning("HEALTH_DB_ID 尚未設定，跳過 Notion 寫入。")
         append_run("health_tracker.py", ok=True, wrote_notion=False)
 
-    # 第二階段（T19）：同一次登入 session 順路同步活動，失敗完全隔離於健康數據之外
+    # 同一次 Garmin 登入也可讀活動，即使健康指標缺失。
     sync_activities(garmin, target_date)
+
+    if key_fields_missing:
+        sys.exit(1)
 
     logger.info("健康追蹤腳本完成")
 
