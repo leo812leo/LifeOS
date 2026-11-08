@@ -9,6 +9,8 @@
   support them.
 - Reduce the AI output budget. If generation fails, send one status message
   with the source schedule or the health metrics that were available.
+- Limit the separate Friday review to 1,024 output tokens and a shorter summary
+  to reduce rejected requests when credits are limited.
 - Offline fixtures cover missing and expired schedules, valid long workouts
   and one-message fallback delivery.
 
