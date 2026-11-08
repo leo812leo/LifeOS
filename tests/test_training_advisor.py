@@ -3,7 +3,7 @@
 import json
 import os
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import MagicMock, patch
@@ -13,7 +13,9 @@ import pytest
 from models import ActivityData, AthleteProfile, HealthData, WeeklyContext
 from scripts.training_advisor import (
     GarminCoachContext,
+    GarminCoachTask,
     _build_fallback_plan,
+    _fetch_garmin_coach_context,
     _format_context_for_prompt,
     _format_garmin_coach_for_prompt,
     _format_no_coach_advisory,
@@ -112,6 +114,18 @@ def valid_coach_week() -> List[dict]:
     ]
 
 
+def _coach_with_run(duration_s: int = 45 * 60, days_to_race: int = 70) -> GarminCoachContext:
+    today = date.today()
+    return GarminCoachContext(
+        plan_name="測試 Garmin Coach",
+        current_phase="BUILD",
+        current_phase_cn="建量期",
+        weeks_total=16,
+        race_date=(today + timedelta(days=days_to_race)).isoformat(),
+        tasks=(GarminCoachTask(today.isoformat(), "Easy Run", None, None, None, duration_s, False, None),),
+    )
+
+
 # ── TestLoadAthleteProfile ─────────────────────────────────────────────────────
 
 
@@ -167,7 +181,7 @@ class TestFormatContextForPrompt:
     def test_empty_context_produces_string(self, empty_context: WeeklyContext) -> None:
         result = _format_context_for_prompt(empty_context)
         assert isinstance(result, str)
-        assert "0 次" in result  # 跑步 0 次
+        assert "活動紀錄未取得" in result
 
     def test_rich_context_includes_all_fields(self, rich_context: WeeklyContext) -> None:
         result = _format_context_for_prompt(rich_context)
@@ -281,14 +295,7 @@ class TestCoachDeltaMode:
     def test_system_prompt_demands_delta_not_new_plan(
         self, rich_context: WeeklyContext, sample_profile: AthleteProfile
     ) -> None:
-        coach = GarminCoachContext(
-            plan_name="Garmin Coach 馬拉松",
-            current_phase="BUILD",
-            current_phase_cn="建量期",
-            weeks_total=16,
-            race_date="2026-10-25",
-            tasks=(),
-        )
+        coach = _coach_with_run()
         with patch("scripts.ai_coach._call_ai_api", return_value="修正建議內容") as mock_call:
             result = _generate_weekly_plan(rich_context, sample_profile, coach=coach)
 
@@ -305,14 +312,7 @@ class TestPaceZoneWiring:
     """coach-mode user_message 含 VDOT 配速表與 Karvonen 心率區間（T13）。"""
 
     def _coach(self) -> GarminCoachContext:
-        return GarminCoachContext(
-            plan_name="Garmin Coach 馬拉松",
-            current_phase="BUILD",
-            current_phase_cn="建量期",
-            weeks_total=16,
-            race_date="2026-10-25",
-            tasks=(),
-        )
+        return _coach_with_run()
 
     def test_user_message_contains_pace_table_and_hr_zones(
         self, rich_context: WeeklyContext, sample_profile: AthleteProfile
@@ -455,7 +455,7 @@ class TestManualCoachWeekWiring:
             current_phase_cn="手動抄錄課表",
             weeks_total=0,
             race_date="2026-10-25",
-            tasks=(),
+            tasks=(GarminCoachTask("週一", None, None, None, None, None, True, None),),
         )
         result, mock_gen = self._run_with_sources(api_ctx=None, manual_ctx=manual_ctx)
         assert result == "PLAN"
@@ -467,25 +467,74 @@ class TestManualCoachWeekWiring:
         assert result == "PLAN"
         assert mock_gen.call_args.args[2] is None
 
+    def test_empty_api_schedule_tries_manual_backup(self) -> None:
+        empty = GarminCoachContext("舊計畫", "UNKNOWN", "UNKNOWN", 0, "2026-10-25", ())
+        rest = GarminCoachTask("週一", None, None, None, None, None, True, None)
+        manual = GarminCoachContext("手動課表", "MANUAL", "手動抄錄", 0, "", (rest,))
+        result, mock_gen = self._run_with_sources(api_ctx=empty, manual_ctx=manual)
+        assert result == "PLAN"
+        assert mock_gen.call_args.args[2] is manual
+
+
+def test_garmin_uses_recent_entries_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in {
+        "GARMIN_COACH_PLAN_ID": "123", "GARMIN_EMAIL": "fake", "GARMIN_PASSWORD": "fake",
+    }.items():
+        monkeypatch.setenv(key, value)
+    today = date.today()
+    task = {"taskWorkout": {"restDay": True}}
+    details = {
+        "name": "測試 Garmin Coach",
+        "endDate": (today + timedelta(days=70)).isoformat(),
+        "taskList": [
+            {**task, "calendarDate": (today - timedelta(days=1)).isoformat()},
+            {**task, "calendarDate": today.isoformat()},
+            {"calendarDate": today.isoformat()},
+        ],
+    }
+    with patch("garminconnect.Garmin") as garmin, patch(
+        "scripts.training_advisor._fetch_garmin_training_metrics", return_value=None,
+    ):
+        garmin.return_value.get_adaptive_training_plan_by_id.return_value = details
+        coach = _fetch_garmin_coach_context()
+        assert coach is not None
+        assert [item.calendar_date for item in coach.tasks] == [today.isoformat()]
+        details["endDate"] = (today - timedelta(days=1)).isoformat()
+        assert _fetch_garmin_coach_context() is None
+
 
 # ── TestBuildFallbackPlan ────────────────────────────────────────────────────
 
 
 class TestBuildFallbackPlan:
-    def test_returns_string(self, empty_context: WeeklyContext, sample_profile: AthleteProfile) -> None:
-        result = _build_fallback_plan(empty_context, sample_profile)
+    def test_expired_race_and_empty_coach_do_not_produce_a_schedule(
+        self, empty_context: WeeklyContext, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        old_date = (date.today() - timedelta(days=14)).isoformat()
+        monkeypatch.setenv("RACE_DATE", old_date)
+        coach = GarminCoachContext("舊計畫", "UNKNOWN", "UNKNOWN", 0, old_date, ())
+
+        result = _build_fallback_plan(empty_context, coach)
+
+        assert "不含訓練課表" in result
+        assert "活動紀錄未取得" in result
+        for invalid in ("UNKNOWN", "0 週", "減量期", "/fuel", "AI_PROVIDER", "跑步 0 次"):
+            assert invalid not in result
+
+    def test_returns_string(self, empty_context: WeeklyContext) -> None:
+        result = _build_fallback_plan(empty_context)
         assert isinstance(result, str)
         assert len(result) > 50
 
-    def test_includes_fallback_warning(self, empty_context: WeeklyContext, sample_profile: AthleteProfile) -> None:
-        result = _build_fallback_plan(empty_context, sample_profile)
-        assert "API" in result or "fallback" in result.lower() or "Fallback" in result
+    def test_includes_fallback_warning(self, empty_context: WeeklyContext) -> None:
+        result = _build_fallback_plan(empty_context)
+        assert "AI 未產生建議" in result
 
     def test_no_coach_fallback_contains_no_schedule(
-        self, empty_context: WeeklyContext, sample_profile: AthleteProfile
+        self, empty_context: WeeklyContext
     ) -> None:
         """T12：無 Coach 課表時，fallback 絕不生成逐日課表，只給聲明 + 身體狀態。"""
-        result = _build_fallback_plan(empty_context, sample_profile)
+        result = _build_fallback_plan(empty_context)
         assert "無法取得 Garmin Coach 課表" in result
         assert "不含訓練課表" in result
         assert "身體狀態摘要" in result
@@ -495,11 +544,9 @@ class TestBuildFallbackPlan:
         assert "LSD" not in result
 
     def test_coach_fallback_relays_schedule_verbatim(
-        self, empty_context: WeeklyContext, sample_profile: AthleteProfile
+        self, empty_context: WeeklyContext
     ) -> None:
         """有 Coach 課表時，fallback 轉述 Coach 排程（可保留原樣）。"""
-        from scripts.training_advisor import GarminCoachTask
-
         coach = GarminCoachContext(
             plan_name="Garmin Coach 馬拉松",
             current_phase="BUILD",
@@ -519,41 +566,13 @@ class TestBuildFallbackPlan:
                 ),
             ),
         )
-        result = _build_fallback_plan(empty_context, sample_profile, coach=coach)
+        result = _build_fallback_plan(empty_context, coach=coach)
         assert "本週 Garmin Coach 排程" in result
         assert "Easy Run" in result
 
-    def test_includes_injection_day(self, empty_context: WeeklyContext, sample_profile: AthleteProfile) -> None:
-        result = _build_fallback_plan(empty_context, sample_profile)
-        assert "GLP-1" in result
-
-    def test_includes_race_countdown(self, empty_context: WeeklyContext, sample_profile: AthleteProfile) -> None:
-        result = _build_fallback_plan(empty_context, sample_profile)
-        assert "目標賽事" in result
-
-    def test_phase_changes_based_on_weeks_to_race(self, empty_context: WeeklyContext, sample_profile: AthleteProfile) -> None:
-        """距賽事週數不同時，訓練期別（減量期/建量期/基礎期）應正確切換。"""
-        from datetime import timedelta
-        from unittest.mock import patch as mock_patch
-
-        # 模擬距離賽事僅剩 3 週 → 減量期
-        near_race_date = date.today() + timedelta(weeks=3)
-        with mock_patch("scripts.training_advisor._get_race_date", return_value=near_race_date):
-            result_near = _build_fallback_plan(empty_context, sample_profile)
-
-        # 模擬距離賽事還有 12 週 → 建量期（8 < 12 <= 16）
-        mid_race_date = date.today() + timedelta(weeks=12)
-        with mock_patch("scripts.training_advisor._get_race_date", return_value=mid_race_date):
-            result_mid = _build_fallback_plan(empty_context, sample_profile)
-
-        # 模擬距離賽事還有 20 週 → 基礎期（> 16）
-        far_race_date = date.today() + timedelta(weeks=20)
-        with mock_patch("scripts.training_advisor._get_race_date", return_value=far_race_date):
-            result_far = _build_fallback_plan(empty_context, sample_profile)
-
-        assert "減量期" in result_near
-        assert "建量期" in result_mid
-        assert "基礎期" in result_far
+    def test_includes_race_countdown(self, empty_context: WeeklyContext) -> None:
+        result = _build_fallback_plan(empty_context, _coach_with_run(days_to_race=3))
+        assert "距目標賽事 3 天" in result
 
 
 # ── T11: 長跑補給與腸胃訓練協議 ───────────────────────────────────────────────
@@ -583,94 +602,47 @@ def fueled_context() -> WeeklyContext:
 
 
 class TestFuelingInPrompts:
-    def test_template_renders_with_fuel_placeholders(
+    def test_no_coach_prompt_has_no_fuel_target_or_race_countdown(
         self, fueled_context: WeeklyContext, sample_profile: AthleteProfile
     ) -> None:
-        """prompt 模板含新佔位符（fuel_target/fuel_history）且渲染不炸（無 coach 路徑）。"""
-        from datetime import timedelta
-
-        race = date.today() + timedelta(weeks=15)  # ≥13 週 → 30-40g/hr
-        with patch(
-            "scripts.training_advisor._get_race_date", return_value=race
-        ), patch(
-            "scripts.ai_coach._call_ai_api", return_value="[]"
-        ) as mock_call:
+        with patch("scripts.ai_coach._call_ai_api", return_value="評估") as mock_call:
             _generate_weekly_plan(fueled_context, sample_profile, coach=None)
 
         user_message = mock_call.call_args.kwargs["user_message"]
-        assert "賽中補給與腸胃訓練" in user_message
-        assert "每小時 30-40g 碳水" in user_message
-        # 最近 /fuel 回報要被餵進 prompt（AI 依 GI 調整下一次目標）
-        assert "碳水 45g" in user_message
-        assert "GI 2" in user_message
-        # GI 調整規則
-        assert "GI Score ≥3" in user_message
+        assert "每小時" not in user_message
+        assert "距目標賽事" not in user_message
+        assert mock_call.call_args.kwargs["max_tokens"] < 1059
 
     def test_coach_mode_injects_fueling_rules_and_history(
         self, fueled_context: WeeklyContext, sample_profile: AthleteProfile
     ) -> None:
         """Garmin Coach 模式：系統提示含補給協議，使用者訊息含目標 + 回報。"""
-        from datetime import timedelta
-
-        coach = GarminCoachContext(
-            plan_name="Garmin Coach 馬拉松",
-            current_phase="BUILD",
-            current_phase_cn="建量期",
-            weeks_total=16,
-            race_date="2026-10-25",
-            tasks=(),
-        )
-        race = date.today() + timedelta(weeks=10)  # 9-12 週 → 40-60g/hr
-        with patch(
-            "scripts.training_advisor._get_race_date", return_value=race
-        ), patch(
-            "scripts.ai_coach._call_ai_api", return_value="測試修正建議"
-        ) as mock_call:
+        coach = _coach_with_run(duration_s=90 * 60)
+        with patch("scripts.ai_coach._call_ai_api", return_value="測試修正建議") as mock_call:
             result = _generate_weekly_plan(fueled_context, sample_profile, coach=coach)
 
         assert result is not None
         system_prompt = mock_call.call_args.kwargs["system_prompt"]
         assert "腸胃訓練" in system_prompt
-        assert "60-90g" in system_prompt  # 賽事目標
         assert "GI ≥3" in system_prompt
 
         user_message = mock_call.call_args.kwargs["user_message"]
         assert "補給演練目標：每小時 40-60g 碳水" in user_message
         assert "碳水 45g" in user_message
 
-    def test_fallback_plan_contains_fuel_target(
-        self, empty_context: WeeklyContext, sample_profile: AthleteProfile
+    @pytest.mark.parametrize("duration_s,days_to_race,expected", [(5399, 42, False), (5400, 42, True), (5400, -1, False)])
+    def test_fuel_requires_long_run_and_valid_race(
+        self, empty_context: WeeklyContext,
+        duration_s: int, days_to_race: int, expected: bool,
     ) -> None:
-        """AI 不可用時，fallback 計劃仍要有確定性的補給演練目標。"""
-        from datetime import timedelta
+        coach = _coach_with_run(duration_s, days_to_race)
+        result = _build_fallback_plan(empty_context, coach=coach)
+        assert ("60-75g" in result) is expected
+        assert ("/fuel" in result) is expected
 
-        race = date.today() + timedelta(weeks=6)  # 5-8 週 → 60-75g/hr
-        with patch("scripts.training_advisor._get_race_date", return_value=race):
-            result = _build_fallback_plan(empty_context, sample_profile)
-
-        assert "補給演練目標" in result
-        assert "60-75g" in result
-        assert "/fuel" in result
-
-    def test_coach_fallback_plan_contains_fuel_target(
-        self, empty_context: WeeklyContext, sample_profile: AthleteProfile
-    ) -> None:
-        coach = GarminCoachContext(
-            plan_name="Garmin Coach 馬拉松",
-            current_phase="BUILD",
-            current_phase_cn="建量期",
-            weeks_total=16,
-            race_date="2026-10-25",
-            tasks=(),
-        )
-        result = _build_fallback_plan(empty_context, sample_profile, coach=coach)
-        assert "補給演練目標" in result
-
-    def test_dry_run_output_contains_fuel_target_with_fake_fuel_data(
+    def test_historical_fuel_does_not_create_new_target_in_fallback(
         self, fueled_context: WeeklyContext
     ) -> None:
-        """驗收情境：training_advisor --dry-run 輸出含補給演練目標
-        （餵假的近期 Fuel 數據；AI 不可用 → fallback 路徑，全 mock 在 API 邊界）。"""
         with (
             patch.dict("os.environ", {
                 "NOTION_API_KEY": "test-key",
@@ -689,8 +661,8 @@ class TestFuelingInPrompts:
             result = run_weekly_advisor(dry_run=True)
 
         assert result is not None
-        assert "補給演練目標" in result
-        assert "/fuel" in result
+        assert "補給演練目標" not in result
+        assert "/fuel" not in result
         mock_alert.assert_not_called()  # 乾跑不可發送正式告警。
 
 
@@ -744,8 +716,7 @@ class TestRunWeeklyAdvisor:
             result = run_weekly_advisor(dry_run=True)
 
         assert result is not None
-        # ANTHROPIC_API_KEY 未設定 → 應使用 fallback 計劃
-        assert "Fallback" in result or "fallback" in result.lower() or "API" in result
+        assert "AI 未產生建議" in result
 
     def test_skips_activity_fetch_when_db_not_set(self) -> None:
         mock_context = WeeklyContext(

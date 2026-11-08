@@ -47,7 +47,7 @@ from scripts.notion_reader import (
     rolling_resting_hr,
 )
 from utils.delivery import send_telegram_text
-from utils.fueling import carb_target_g_per_hr, format_fuel_history
+from utils.fueling import carb_target_g_per_hr, format_fuel_history, parse_workout_text
 from utils.logger import get_logger
 from utils.run_ledger import append_run
 from utils.vdot_paces import DEFAULT_RESTING_HR, karvonen_zones, vdot_to_paces
@@ -57,13 +57,19 @@ logger = get_logger(__name__)
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
 _GARMIN_TOKEN_DIR = str(Path(__file__).resolve().parent.parent / ".garmin_tokens")
 
-# 從 .env 讀取，fallback 到硬編碼
-def _get_race_date() -> date:
-    raw = os.getenv("RACE_DATE", "2030-01-01")
+
+def _parse_iso_date(raw: object) -> Optional[date]:
+    if not isinstance(raw, str):
+        return None
     try:
         return date.fromisoformat(raw)
     except ValueError:
-        return date(2030, 1, 1)
+        return None
+
+
+def _get_race_date() -> Optional[date]:
+    return _parse_iso_date(os.getenv("RACE_DATE", ""))
+
 
 # 日期名稱對照
 _DAY_NAMES = {0: "週一", 1: "週二", 2: "週三", 3: "週四", 4: "週五", 5: "週六", 6: "週日"}
@@ -134,6 +140,48 @@ class GarminCoachContext:
     race_date: str
     tasks: Tuple[GarminCoachTask, ...]
     metrics: Optional[GarminTrainingMetrics] = None
+
+
+def _race_days(coach: Optional[GarminCoachContext]) -> Optional[int]:
+    if coach is None:
+        return None
+    if coach.current_phase != "MANUAL":
+        race_date = _parse_iso_date(coach.race_date)
+    else:
+        race_date = _get_race_date()
+    if race_date is None:
+        return None
+    remaining = (race_date - date.today()).days
+    return remaining if remaining >= 0 else None
+
+
+def _race_countdown(days: Optional[int]) -> str:
+    if days is None:
+        return ""
+    if days == 0:
+        return "今天是目標賽事日"
+    return f"距目標賽事 {days} 天"
+
+
+def _fuel_target(coach: Optional[GarminCoachContext]) -> Optional[Tuple[int, int]]:
+    """只有有效目標賽事及明確至少 90 分鐘的課表，才計算賽前補給目標。"""
+    days = _race_days(coach)
+    if not coach or days is None:
+        return None
+    for task in coach.tasks:
+        if task.is_rest_day:
+            continue
+        duration = task.estimated_duration_s
+        if duration is None:
+            minutes, _ = parse_workout_text(task.workout_description)
+            duration = minutes * 60 if minutes is not None else 0
+        if duration >= 90 * 60:
+            return carb_target_g_per_hr(days // 7)
+    return None
+
+
+def _phase_suffix(coach: GarminCoachContext) -> str:
+    return f" — {coach.current_phase_cn}" if coach.current_phase in _PHASE_NAMES else ""
 
 
 # ── Garmin 訓練指標讀取 ─────────────────────────────────────────────────────
@@ -274,26 +322,44 @@ def _fetch_garmin_coach_context() -> Optional[GarminCoachContext]:
 
         detail = client.get_adaptive_training_plan_by_id(int(plan_id))
     except Exception as exc:
-        logger.warning("Garmin Coach 讀取失敗（降級模式）：%s", exc)
+        logger.warning("Garmin Coach 讀取失敗（降級模式）：%s", type(exc).__name__)
         return None
 
-    # ── 讀取訓練指標（Training Readiness + Status + Load Balance）────────
-    metrics = _fetch_garmin_training_metrics(client)
+    if not isinstance(detail, dict):
+        logger.warning("Garmin Coach 未回傳可用的計畫資料")
+        return None
+
+    today = date.today()
+    end_date = _parse_iso_date(detail.get("endDate"))
+    if end_date is not None and end_date < today:
+        logger.info("Garmin Coach 指定計畫已結束（%s），不採用舊課表", end_date)
+        return None
 
     # 解析訓練期別
     current_phase = "UNKNOWN"
     phases = detail.get("adaptivePlanPhases") or []
     for phase in phases:
-        if phase.get("currentPhase"):
-            current_phase = phase.get("trainingPhase", "UNKNOWN")
+        if isinstance(phase, dict) and phase.get("currentPhase"):
+            phase_name = phase.get("trainingPhase")
+            if isinstance(phase_name, str):
+                current_phase = phase_name
             break
 
     # 解析本週排程（taskList 只包含近期 ~7 天）
     tasks: List[GarminCoachTask] = []
     for task in detail.get("taskList") or []:
+        if not isinstance(task, dict):
+            continue
+        task_date = _parse_iso_date(task.get("calendarDate"))
+        if task_date is None or not today <= task_date <= today + timedelta(days=7):
+            continue
         tw = task.get("taskWorkout") or {}
+        if not isinstance(tw, dict) or not any(
+            tw.get(key) for key in ("workoutName", "trainingEffectLabel", "restDay")
+        ):
+            continue
         tasks.append(GarminCoachTask(
-            calendar_date=task.get("calendarDate", ""),
+            calendar_date=task_date.isoformat(),
             workout_name=tw.get("workoutName"),
             workout_description=tw.get("workoutDescription"),
             training_effect=tw.get("trainingEffectLabel"),
@@ -303,6 +369,10 @@ def _fetch_garmin_coach_context() -> Optional[GarminCoachContext]:
             status=tw.get("adaptiveCoachingWorkoutStatus"),
         ))
 
+    if not tasks:
+        logger.info("Garmin Coach 已回傳計畫，但沒有可用的近期課表")
+        return None
+
     coach = GarminCoachContext(
         plan_name=detail.get("name", "Garmin Coach"),
         current_phase=current_phase,
@@ -310,7 +380,7 @@ def _fetch_garmin_coach_context() -> Optional[GarminCoachContext]:
         weeks_total=detail.get("durationInWeeks", 0),
         race_date=detail.get("endDate", ""),
         tasks=tuple(tasks),
-        metrics=metrics,
+        metrics=_fetch_garmin_training_metrics(client),
     )
 
     logger.info(
@@ -420,7 +490,7 @@ def _load_manual_coach_week(
         current_phase="MANUAL",
         current_phase_cn="手動抄錄課表",
         weeks_total=0,
-        race_date=_get_race_date().isoformat(),
+        race_date="",
         tasks=tuple(tasks),
         metrics=None,
     )
@@ -430,11 +500,13 @@ def _format_garmin_coach_for_prompt(coach: GarminCoachContext) -> str:
     """將 Garmin Coach 排程 + 訓練指標格式化為 prompt 用文字。"""
     lines = [
         f"## Garmin Coach 計劃：{coach.plan_name}",
-        f"- 當前訓練期別：{coach.current_phase_cn}（{coach.current_phase}）",
     ]
+    if _phase_suffix(coach):
+        lines.append(f"- 當前訓練期別：{coach.current_phase_cn}（{coach.current_phase}）")
     if coach.weeks_total > 0:
         lines.append(f"- 計劃總週數：{coach.weeks_total} 週")
-    lines.append(f"- 目標賽事日期：{coach.race_date}")
+    if _race_days(coach) is not None and coach.race_date:
+        lines.append(f"- 目標賽事日期：{coach.race_date}")
 
     # ── 訓練指標摘要 ─────────────────────────────────────────────────
     m = coach.metrics
@@ -570,7 +642,6 @@ def run_weekly_advisor(
     # 商業版 workspace 用的獨立 API key（如果 Nutrition / Activity 在不同 workspace）
     nutrition_api_key = os.getenv("NUTRITION_NOTION_API_KEY", notion_api_key)
     activity_api_key = os.getenv("ACTIVITY_NOTION_API_KEY", notion_api_key)
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
 
     if not notion_api_key:
         logger.error("NOTION_API_KEY 未設定，無法繼續")
@@ -590,10 +661,10 @@ def run_weekly_advisor(
     # ── 讀取 Garmin Coach 計劃（自動 API 優先，coach_week.json 手動備援）──────
     logger.info("讀取 Garmin Coach 計劃...")
     coach_context: Optional[GarminCoachContext] = _fetch_garmin_coach_context()
-    if coach_context:
-        logger.info("✅ Garmin Coach：%s — %s", coach_context.plan_name, coach_context.current_phase_cn)
+    if coach_context and coach_context.tasks:
+        logger.info("Garmin Coach：採用 %d 筆排程", len(coach_context.tasks))
     else:
-        logger.info("Garmin Coach API 不可用，改找手動課表 %s...", _COACH_WEEK_FILENAME)
+        logger.info("沒有可用的 Garmin Coach 課表，改找手動課表 %s...", _COACH_WEEK_FILENAME)
         coach_context = _load_manual_coach_week()
         if coach_context:
             logger.info("✅ 手動課表：%d 筆排程", len(coach_context.tasks))
@@ -627,14 +698,11 @@ def run_weekly_advisor(
         health_records,
         activity_records,
         nutrition_records=nutrition_records,
-        days=min(7, len(health_records) or 7),
+        days=days,
     )
     logger.info(
-        "訓練上下文：%d 天 | 跑步 %d 次 %.1f km | 重訓 %d 次",
-        context.days,
-        context.run_count,
-        context.total_distance_km,
-        context.strength_count,
+        "訓練上下文：查詢 %d 天 | 健康 %d 筆 | 活動 %d 筆 | 營養 %d 筆",
+        days, len(health_records), len(activity_records), len(nutrition_records),
     )
 
     # ── 載入運動員檔案 ────────────────────────────────────────────────────────
@@ -650,18 +718,8 @@ def run_weekly_advisor(
     plan_text = _generate_weekly_plan(context, profile, coach_context, resting_hr=resting_hr_7d)
 
     if not plan_text:
-        logger.warning("AI API 不可用，使用 fallback 計劃")
-        plan_text = _build_fallback_plan(context, profile, coach_context)
-        # 只有正式推送模式可發告警；預覽與只生成模式不能碰 Telegram。
-        if production_delivery:
-            try:
-                from scripts.telegram_bot import safe_send_alert
-                safe_send_alert(
-                    "training_advisor.py",
-                    "AI API 不可用（OPENROUTER_API_KEY 或 ANTHROPIC_API_KEY 失效）。已使用 fallback 計劃。",
-                )
-            except Exception:
-                logger.warning("AI 不可用告警發送失敗（不中斷流程）")
+        logger.warning("AI 未產生週建議，使用備援訊息")
+        plan_text = _build_fallback_plan(context, coach_context)
 
     # ── 輸出 ──────────────────────────────────────────────────────────────────
     if dry_run:
@@ -741,13 +799,12 @@ def _generate_weekly_plan(
     """
     from scripts.ai_coach import _call_ai_api
 
-    race_date = _get_race_date()
-    weeks_to_race = max(0, (race_date - date.today()).days // 7)
+    coach = coach if coach and coach.tasks else None
+    race_countdown = _race_countdown(_race_days(coach))
     weekly_summary = _format_context_for_prompt(context)
 
     # ── 賽中補給演練（T11）：本週目標 + 最近 /fuel 回報 ────────────────
-    fuel_lo, fuel_hi = carb_target_g_per_hr(weeks_to_race)
-    fuel_history = format_fuel_history(list(context.activity_records))
+    fuel_target = _fuel_target(coach)
 
     # ── GLP-1 嚴重度說明 ─────────────────────────────────────────────
     glp1_severity_note = {
@@ -794,27 +851,20 @@ def _generate_weekly_plan(
             "3. ACWR > 1.5 → 過度訓練風險，降量\n"
             "4. GLP-1 副作用明顯時（依跑者個人嚴重度判斷）\n"
             "5. 體重 / 蛋白質 / 水分異常 → 給營養建議（但不一定要改訓練）\n\n"
-            "**長跑補給與腸胃訓練（關鍵）**：\n"
-            "僅使用執行時提供的個人設定與資料，不推測體重、用藥或完賽時間。"
-            "補給目標需要使用者與合適的專業人員確認。\n"
-            "- 距賽 ≥8 週起，每次 ≥90 分鐘的長跑都必須附「補給演練目標」"
-            "（量化 g/hr 數字；本週目標見使用者訊息的「賽中補給」區塊，"
-            "從 30-40g/hr 漸進到 60-90g/hr）\n"
-            "- 依最近長跑的 Fuel Carbs / GI Score 調整下一次目標："
-            "GI ≥3（腸胃不適）→ 維持或降量、更換品項；GI ≤2 → 按計劃加量\n"
-            "- 距賽 ≤3 週：輸出完整賽日補給計劃草稿"
-            "（起跑前 + 每 30 分鐘的品項與克數、總量）\n\n"
+            "**長跑補給與腸胃訓練**：只在使用者訊息提供本週補給目標時，"
+            "對課表中明確 ≥90 分鐘的長跑附上該目標。"
+            "參考近期回報：GI ≥3（腸胃不適）時不要建議加量。"
+            "目標或課表缺失時不要推測，也不要排賽日補給。\n\n"
             "**⚠️ 必須引用具體數據！**\n"
             "每個建議都要對應到具體數字。禁止寫「狀態良好」「無需調整」這種空話。\n"
             "範例：「✅ 維持（Readiness 75 HIGH，HRV 52ms GOOD，睡眠分數 82）」\n"
             "      「⚠️ 改 6km LSD（原 LSD 18km）— Readiness 35 LOW，連續 3 天睡眠 < 6h」\n\n"
             "**輸出格式**（用繁體中文 + Markdown，不要用 HTML 標籤）：\n"
-            "1. **本週生理摘要**：列出關鍵數據（VO2 Max XX / Training Status XX / ACWR X.X / HRV XXms / 訓練負荷平衡狀態）\n"
+            "1. **近期生理摘要**：只列已取得的數據；缺值不可當成零或用推測補齊\n"
             "2. **每日修正表**（一天一行）：\n"
             "   `日期(週X) | Coach 排程(具體) | 維持/修正(具體) | 數據佐證`\n"
             "3. **本週重點 3-5 點**：含營養（蛋白質 XXg/目標 / 水分 XXml/目標）+ 體重趨勢 + 訓練重點\n"
-            "4. 如果整週都不需要修正，仍要在每日表格列出 Coach 排程 + 數據佐證\n"
-            "5. 本週排程中每個 ≥90 分鐘的長跑，該行都要附補給演練目標（每小時 Xg 碳水）"
+            "4. 如果整週都不需要修正，仍要列出已取得的 Coach 排程；不要補寫缺少的日期"
         )
         user_message = (
             f"{garmin_section}\n\n"
@@ -827,12 +877,17 @@ def _generate_weekly_plan(
             f"{pace_zone_section}"
             f"- 蛋白質目標：{profile.protein_target_g}g/天\n"
             f"- 飲水目標：{profile.water_target_l}L/天\n"
-            f"- 距賽事：{weeks_to_race} 週\n\n"
-            f"## 近期生理數據\n{weekly_summary}\n\n"
-            f"## 賽中補給（腸胃訓練）\n"
-            f"- 本週長跑（≥90 分鐘）補給演練目標：每小時 {fuel_lo}-{fuel_hi}g 碳水\n"
-            f"{fuel_history}"
+            f"## 近期生理數據\n{weekly_summary}"
         )
+        if race_countdown:
+            user_message += f"\n\n{race_countdown}"
+        if fuel_target is not None:
+            fuel_lo, fuel_hi = fuel_target
+            user_message += (
+                f"\n\n## 賽中補給（腸胃訓練）\n"
+                f"- 本週長跑（≥90 分鐘）補給演練目標：每小時 {fuel_lo}-{fuel_hi}g 碳水\n"
+                f"{format_fuel_history(list(context.activity_records))}"
+            )
     else:
         # 無 Coach 課表（API + coach_week.json 皆不可用）→ 純身體狀態諮詢模式：
         # 明確聲明未讀到課表、只給身體狀態評估與注意事項，絕不編造課表（T12）
@@ -852,21 +907,16 @@ def _generate_weekly_plan(
             injection_day_name=_DAY_NAMES.get(profile.glp1_injection_day, "週五"),
             easy_pace_min=_format_pace(profile.easy_pace_min),
             easy_pace_max=_format_pace(profile.easy_pace_max),
-            race_date=race_date.isoformat(),
-            weeks_to_race=weeks_to_race,
             weekly_summary=weekly_summary,
-            fuel_target_low=fuel_lo,
-            fuel_target_high=fuel_hi,
-            fuel_history=fuel_history,
         )
 
     raw_response = _call_ai_api(
         system_prompt=system_prompt,
         user_message=user_message,
-        max_tokens=4096,
+        max_tokens=1536 if coach else 768,
     )
 
-    if raw_response is None:
+    if not isinstance(raw_response, str) or not raw_response.strip():
         return None
 
     # Coach 模式：回傳對課表的修正清單（delta）
@@ -881,14 +931,22 @@ def _format_context_for_prompt(context: WeeklyContext) -> str:
     """將 WeeklyContext 格式化為 prompt 用的文字摘要。"""
     lines = [
         f"- 過去 {context.days} 天",
-        f"- 跑步：{context.run_count} 次，共 {context.total_distance_km} km",
-        f"- 重訓：{context.strength_count} 次",
-        f"- 訓練負荷：{context.total_training_load}",
-        f"- 平均睡眠分數：{context.avg_sleep_score}",
-        f"- 平均 HRV：{context.avg_hrv} ms",
-        f"- 平均安靜心率：{context.avg_resting_hr} bpm",
-        f"- 慢性訓練負荷：{context.chronic_load}",
     ]
+    if context.activity_records:
+        lines.extend([
+            f"- 跑步：{context.run_count} 次，共 {context.total_distance_km} km",
+            f"- 重訓：{context.strength_count} 次",
+            f"- 訓練負荷：{context.total_training_load}",
+        ])
+    else:
+        lines.append("- 活動紀錄未取得，無法判斷訓練量")
+    for label, value, unit in (
+        ("平均睡眠分數", context.avg_sleep_score, ""),
+        ("平均 HRV", context.avg_hrv, " ms"),
+        ("平均安靜心率", context.avg_resting_hr, " bpm"),
+        ("慢性訓練負荷", context.chronic_load, ""),
+    ):
+        lines.append(f"- {label}：{value}{unit}" if value is not None else f"- {label}：無資料")
 
     # ── 營養 / 體重摘要 ────────────────────────────────────────────────
     has_nutrition = any([
@@ -899,7 +957,7 @@ def _format_context_for_prompt(context: WeeklyContext) -> str:
     ])
     if has_nutrition:
         lines.append("")
-        lines.append("### 營養與體重（過去 7 天均值）：")
+        lines.append("### 營養與體重（依可取得紀錄）：")
         if context.avg_daily_calories is not None:
             lines.append(f"- 平均每日熱量：{context.avg_daily_calories} kcal")
         if context.avg_daily_protein_g is not None:
@@ -947,13 +1005,9 @@ def _format_no_coach_advisory(ai_response: str) -> str:
     Returns:
         含「未讀到 Garmin Coach 課表」聲明的完整訊息。
     """
-    race_date = _get_race_date()
-    weeks_to_race = max(0, (race_date - date.today()).days // 7)
     header = (
         f"🩺 **身體狀態諮詢** — 未讀到 Garmin Coach 課表\n"
         f"⚠️ 本訊息**不含訓練課表**；本週訓練請以手錶 / Garmin Connect App 上的排程為準\n"
-        f"（每週日花 30 秒把課表抄進 {_COACH_WEEK_FILENAME} 可恢復修正建議模式）\n"
-        f"距目標賽事 {weeks_to_race} 週\n"
         f"{'─' * 40}\n"
     )
     return header + ai_response
@@ -964,17 +1018,11 @@ def _format_no_coach_advisory(ai_response: str) -> str:
 
 def _format_coach_adjustment(ai_response: str, coach: GarminCoachContext) -> str:
     """將 AI 的修正建議包裝成完整的輸出格式。"""
-    race_date = _get_race_date()
-    today = date.today()
-    weeks_to_race = max(0, (race_date - today).days // 7)
-
-    header = (
-        f"🏃 **週訓練修正建議** — {coach.current_phase_cn}\n"
-        f"📋 Garmin Coach：{coach.plan_name}\n"
-        f"距長榮馬拉松 {weeks_to_race} 週\n"
-        f"{'─' * 40}\n"
-    )
-    return header + ai_response
+    lines = [f"🏃 **週訓練修正建議**{_phase_suffix(coach)}", f"📋 {coach.plan_name}"]
+    countdown = _race_countdown(_race_days(coach))
+    if countdown:
+        lines.append(countdown)
+    return "\n".join([*lines, "─" * 40, ai_response])
 
 
 # ── Fallback 計劃 ────────────────────────────────────────────────────────────
@@ -982,97 +1030,68 @@ def _format_coach_adjustment(ai_response: str, coach: GarminCoachContext) -> str
 
 def _build_fallback_plan(
     context: WeeklyContext,
-    profile: AthleteProfile,
     coach: Optional[GarminCoachContext] = None,
 ) -> str:
-    """當 AI API 不可用時的降級輸出。
-
-    若有 Garmin Coach context（API 或 coach_week.json），直接轉述 Coach 排程；
-    否則輸出「無課表聲明 + 身體狀態注意事項」— **不生成課表**（T12：
-    禁止規則引擎盲生一份會跟手錶打架的平行課表）。
-
-    Args:
-        context: 近期訓練上下文。
-        profile: 運動員檔案。
-        coach: Garmin Coach 上下文（可選）。
-
-    Returns:
-        格式化的降級文字。
-    """
-    race_date = _get_race_date()
-    today = date.today()
-    weeks_to_race = max(0, (race_date - today).days // 7)
-
-    # ── 賽中補給演練目標（T11，確定性計算，不依賴 AI）──────────────────
-    fuel_lo, fuel_hi = carb_target_g_per_hr(weeks_to_race)
-    fuel_line = (
-        f"⛽ 本週長跑（≥90 分鐘）補給演練目標：每小時 {fuel_lo}-{fuel_hi}g 碳水"
-        f"（腸胃訓練），跑後回報 /fuel <碳水g> <GI 1-5>"
-    )
-
+    """未產生 AI 建議時，只轉述已取得的課表或身體狀態。"""
     # ── 有 Garmin Coach 時，直接顯示 Coach 排程 ──────────────────────────
-    if coach:
+    if coach and coach.tasks:
+        source = "手動抄錄課表" if coach.current_phase == "MANUAL" else "本週 Garmin Coach 排程"
         lines = [
-            f"🏃 **本週 Garmin Coach 排程** — {coach.current_phase_cn}",
+            f"🏃 **{source}**{_phase_suffix(coach)}",
             f"📋 {coach.plan_name}",
-            f"距長榮馬拉松 {weeks_to_race} 週",
-            f"⚠️ AI API 不可用，以下為 Garmin Coach 原始排程（未經微調）",
-            "",
         ]
+        countdown = _race_countdown(_race_days(coach))
+        if countdown:
+            lines.append(countdown)
+        lines.extend(["AI 未產生建議，以下為原始課表。", ""])
         for task in coach.tasks:
             d = task.calendar_date
-            try:
-                weekday = _DAY_NAMES.get(date.fromisoformat(d).weekday(), "")
-            except ValueError:
-                weekday = ""
+            task_date = _parse_iso_date(d)
+            label = f"{d}（{_DAY_NAMES[task_date.weekday()]}）" if task_date else d
 
             if task.is_rest_day:
-                lines.append(f"😴 {d}（{weekday}）— 休息")
+                lines.append(f"😴 {label} — 休息")
             elif task.workout_name:
                 dist = f" {task.estimated_distance_m / 1000:.1f}km" if task.estimated_distance_m else ""
                 hr = f" ({task.workout_description})" if task.workout_description else ""
-                lines.append(f"🏃 {d}（{weekday}）— {task.workout_name}{dist}{hr}")
+                lines.append(f"🏃 {label} — {task.workout_name}{dist}{hr}")
             else:
-                lines.append(f"📅 {d}（{weekday}）— {task.training_effect or '排程中'}")
+                lines.append(f"📅 {label} — {task.training_effect or '排程中'}")
 
-        lines.append(f"\n{fuel_line}")
-        lines.append(f"\n💡 設定 AI_PROVIDER + API key 可獲得個人化微調建議")
+        target = _fuel_target(coach)
+        if target is not None:
+            lo, hi = target
+            lines.append(
+                f"\n⛽ 本週長跑（≥90 分鐘）補給演練目標：每小時 {lo}-{hi}g 碳水"
+                "，跑後可回報 /fuel <碳水g> <GI 1-5>"
+            )
         return "\n".join(lines)
 
-    # ── 無 Coach 課表：不編課表，輸出無課表聲明 + 身體狀態注意事項（T12）──
-    if weeks_to_race > 16:
-        phase = "基礎期"
-    elif weeks_to_race > 8:
-        phase = "建量期"
-    elif weeks_to_race > 4:
-        phase = "特定期"
+    lines = [
+        "🏃 **本週訓練狀態**",
+        "無法取得 Garmin Coach 課表，也沒有可用的手動課表。AI 未產生建議。",
+        "本訊息不含訓練課表。可到 Garmin Connect 或手錶查看是否有新排程。",
+        "",
+        f"**身體狀態摘要（過去 {context.days} 天內可取得的紀錄）**",
+    ]
+    if context.activity_records:
+        lines.append(
+            f"- 跑步 {context.run_count} 次，共 {context.total_distance_km} km；"
+            f"重訓 {context.strength_count} 次"
+        )
     else:
-        phase = "減量期"
-
-    injection_day_name = _DAY_NAMES.get(profile.glp1_injection_day, "週五")
-
-    def _fmt(value: Optional[float], unit: str = "") -> str:
-        """None → 「無資料」，避免輸出 'None ms' 這類垃圾。"""
-        return f"{value}{unit}" if value is not None else "無資料"
-
-    return (
-        f"🩺 **身體狀態通知（Fallback）** — {phase}\n"
-        f"距目標賽事 {weeks_to_race} 週\n\n"
-        f"⚠️ 無法取得 Garmin Coach 課表（API 不可用、{_COACH_WEEK_FILENAME} 缺失或過期），"
-        f"且 AI API 不可用。\n"
-        f"本訊息**不含訓練課表** — 本週訓練請直接照手錶 / Garmin Connect App 上的排程執行。\n\n"
-        f"**身體狀態摘要（過去 {context.days} 天）：**\n"
-        f"- 跑步 {context.run_count} 次共 {context.total_distance_km}km、"
-        f"重訓 {context.strength_count} 次\n"
-        f"- 平均睡眠分數：{_fmt(context.avg_sleep_score)}\n"
-        f"- 平均 HRV：{_fmt(context.avg_hrv, ' ms')}\n"
-        f"- 平均安靜心率：{_fmt(context.avg_resting_hr, ' bpm')}\n\n"
-        f"**注意事項：**\n"
-        f"- {injection_day_name}為 GLP-1 注射日，注射後 24-48 小時避免高強度\n"
-        f"- {fuel_line}\n"
-        f"- 每週日花 30 秒把手錶課表抄進 {_COACH_WEEK_FILENAME}"
-        f"（7 筆 {{\"day\", \"type\", \"target\"}}），即可恢復 AI 修正建議模式"
-    )
+        lines.append("- 活動紀錄未取得，無法判斷跑步或重訓次數")
+    metrics = [
+        f"- {label}：{value}{unit}"
+        for label, value, unit in (
+            ("平均睡眠分數", context.avg_sleep_score, ""),
+            ("平均 HRV", context.avg_hrv, " ms"),
+            ("平均安靜心率", context.avg_resting_hr, " bpm"),
+        )
+        if value is not None
+    ]
+    lines.extend(metrics or ["- 睡眠、HRV、安靜心率無可用紀錄"])
+    return "\n".join(lines)
 
 
 # ── Telegram 推播 ────────────────────────────────────────────────────────────
