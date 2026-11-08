@@ -320,6 +320,7 @@ async def _record_metric(
     找不到當天活動、Notion 未設定、或寫入失敗時，一律暫存到
     ``logs/rpe_pending.jsonl`` 並在回覆中誠實反映「尚未寫入 Notion」，
     絕不假裝已成功記錄。
+    Notion 已確認更新後若 Telegram 回覆失敗，不另建待補寫紀錄。
 
     Args:
         update: Telegram ``Update`` 物件（用來回覆訊息）。
@@ -358,6 +359,7 @@ async def _record_metric(
         )
         return
 
+    write_confirmed = False
     try:
         client = get_notion_client(api_key)
         page = _find_today_activity_page(client, db_id)
@@ -384,12 +386,16 @@ async def _record_metric(
             )
             return
 
+        write_confirmed = True
         note_suffix = f"（{notes}）" if notes else ""
         await update.message.reply_text(
             f"✅ 已寫入 Notion：{label} {value}{note_suffix}" + extra_reply
         )
 
     except Exception as exc:
+        if write_confirmed:
+            logger.error("Notion 更新已確認，但 Telegram 回覆失敗：%s", type(exc).__name__)
+            return
         logger.error("%s 寫入 Notion 時發生未預期錯誤：%s", label, exc)
         _pending()
         await update.message.reply_text(
@@ -430,6 +436,7 @@ async def _record_fuel(
     或寫入失敗（包含 Activity DB 尚未跑 ``add_activity_fuel_fields.js`` 遷移、
     欄位不存在的情況）時，一律暫存到 ``logs/rpe_pending.jsonl`` 並在回覆中
     誠實反映「尚未寫入 Notion」，絕不假裝已成功記錄。
+    Notion 已確認更新後若 Telegram 回覆失敗，不另建待補寫紀錄。
 
     寫入三個欄位：``Fuel Carbs (g)``（number）、``GI Score``（number）、
     ``Fuel Plan``（rich_text，僅在有備註時更新）。
@@ -476,6 +483,7 @@ async def _record_fuel(
         )
         return
 
+    write_confirmed = False
     try:
         client = get_notion_client(api_key)
         page = _find_today_activity_page(client, db_id)
@@ -504,12 +512,16 @@ async def _record_fuel(
             )
             return
 
+        write_confirmed = True
         note_suffix = f"（{notes}）" if notes else ""
         await update.message.reply_text(
             f"✅ 已寫入 Notion：{display}{note_suffix}" + extra_reply
         )
 
     except Exception as exc:
+        if write_confirmed:
+            logger.error("Notion 更新已確認，但 Telegram 回覆失敗：%s", type(exc).__name__)
+            return
         logger.error("Fuel 寫入 Notion 時發生未預期錯誤：%s", exc)
         _pending()
         await update.message.reply_text(
