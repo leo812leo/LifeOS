@@ -10,7 +10,7 @@
 - 體重：{weight_kg}kg（目標 {target_weight_kg}kg）
 - VDOT：{vdot}
 - 最大心率：{max_hr} bpm
-- GLP-1 注射日：每週{injection_day_name}（注射後 24-48 小時避免高強度）
+- 請勿推測用藥、用藥時間或副作用。
 - 輕鬆跑配速：{easy_pace_min}-{easy_pace_max} min/km
 
 ## 近期訓練與生理數據

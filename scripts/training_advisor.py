@@ -806,14 +806,6 @@ def _generate_weekly_plan(
     # ── 賽中補給演練（T11）：本週目標 + 最近 /fuel 回報 ────────────────
     fuel_target = _fuel_target(coach)
 
-    # ── GLP-1 嚴重度說明 ─────────────────────────────────────────────
-    glp1_severity_note = {
-        "minimal": "幾乎無副作用，注射日不需特別降低訓練強度",
-        "mild": "輕微副作用（偶有食慾下降），可能需微幅調整",
-        "moderate": "中等副作用（噁心、疲勞），注射隔天建議降強度",
-        "severe": "強烈副作用，注射日及隔天建議休息",
-    }.get(profile.glp1_severity, "輕微副作用")
-
     # ── 配速表與心率區間（T13）：由 VDOT／(max_hr, 安靜心率) 動態推導，
     # 取代原本寫死的數字。安靜心率優先使用近期實測滾動均值
     # （WeeklyContext.avg_resting_hr，來自 fetch_health_history），
@@ -849,8 +841,8 @@ def _generate_weekly_plan(
             "1. HRV 顯著偏低（< 個人基線 -15%） + 睡眠差 → 降強度\n"
             "2. Body Battery < 30 → 改休息\n"
             "3. ACWR > 1.5 → 過度訓練風險，降量\n"
-            "4. GLP-1 副作用明顯時（依跑者個人嚴重度判斷）\n"
-            "5. 體重 / 蛋白質 / 水分異常 → 給營養建議（但不一定要改訓練）\n\n"
+            "4. 體重 / 蛋白質 / 水分異常 → 給營養建議（但不一定要改訓練）\n"
+            "不要推測用藥、用藥時間或副作用。\n\n"
             "**長跑補給與腸胃訓練**：只在使用者訊息提供本週補給目標時，"
             "對課表中明確 ≥90 分鐘的長跑附上該目標。"
             "參考近期回報：GI ≥3（腸胃不適）時不要建議加量。"
@@ -872,8 +864,6 @@ def _generate_weekly_plan(
             f"- 體重：{profile.weight_kg}kg（目標 {profile.target_weight_kg}kg）\n"
             f"- VDOT：{profile.vdot}\n"
             f"- 最大心率：{profile.max_hr} bpm\n"
-            f"- GLP-1 注射日：{_DAY_NAMES.get(profile.glp1_injection_day, '週五')}\n"
-            f"- **GLP-1 副作用：{glp1_severity_note}**（很重要：請依此判斷是否要因注射日調整強度）\n"
             f"{pace_zone_section}"
             f"- 蛋白質目標：{profile.protein_target_g}g/天\n"
             f"- 飲水目標：{profile.water_target_l}L/天\n"
@@ -904,7 +894,6 @@ def _generate_weekly_plan(
             target_weight_kg=profile.target_weight_kg,
             vdot=profile.vdot,
             max_hr=profile.max_hr,
-            injection_day_name=_DAY_NAMES.get(profile.glp1_injection_day, "週五"),
             easy_pace_min=_format_pace(profile.easy_pace_min),
             easy_pace_max=_format_pace(profile.easy_pace_max),
             weekly_summary=weekly_summary,

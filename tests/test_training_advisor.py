@@ -292,6 +292,16 @@ class TestLoadManualCoachWeek:
 
 
 class TestCoachDeltaMode:
+    @pytest.mark.parametrize("with_schedule", [False, True])
+    def test_default_profile_does_not_assert_medication(self, rich_context, sample_profile, with_schedule):
+        coach = _coach_with_run() if with_schedule else None
+        with patch("scripts.ai_coach._call_ai_api", return_value="評估") as api:
+            _generate_weekly_plan(rich_context, sample_profile, coach=coach)
+        prompt = api.call_args.kwargs["system_prompt"] + api.call_args.kwargs["user_message"]
+        assert "GLP-1" not in prompt
+        assert "注射日" not in prompt
+        assert "推測用藥" in prompt
+
     def test_system_prompt_demands_delta_not_new_plan(
         self, rich_context: WeeklyContext, sample_profile: AthleteProfile
     ) -> None:

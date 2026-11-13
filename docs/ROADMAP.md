@@ -1,5 +1,10 @@
 # Public roadmap
 
+## Weekly Coach prompt correction — 2026-11-14
+
+- Both weekly prompt paths use measured training inputs and omit medication
+  timing and side-effect assumptions derived from default profile values.
+
 ## Weekly Coach reporting — 2026-11-09
 
 - Use the manual schedule when Garmin returns no usable upcoming workouts.
