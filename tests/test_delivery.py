@@ -146,7 +146,7 @@ def test_production_generation_failure_records_failure_or_delivered_fallback(pip
         pipeline.name + ".py", ok=fallback_delivered, wrote_notion=False,
     )
     if fallback_delivered:
-        pipeline.alert.assert_called_once()
+        pipeline.alert.assert_not_called()
         pipeline.send.assert_called_once()
     else:
         pipeline.send.assert_not_called()

@@ -1,5 +1,24 @@
 # Public roadmap
 
+## Weekly Coach prompt correction — 2026-11-14
+
+- Both weekly prompt paths use measured training inputs and omit medication
+  timing and side-effect assumptions derived from default profile values.
+
+## Weekly Coach reporting — 2026-11-09
+
+- Use the manual schedule when Garmin returns no usable upcoming workouts.
+  Skip expired plans and omit unknown phases and expired countdowns.
+- Show unavailable activity history separately from a recorded zero. Display
+  fueling targets only when a scheduled long workout and a current race date
+  support them.
+- Reduce the AI output budget. If generation fails, send one status message
+  with the source schedule or the health metrics that were available.
+- Limit the separate Friday review to 1,024 output tokens and a shorter summary
+  to reduce rejected requests when credits are limited.
+- Offline fixtures cover missing and expired schedules, valid long workouts
+  and one-message fallback delivery.
+
 ## Connector-first foundation — 2026-10-03
 
 - Add an offline test launcher, temporary runtime paths and guards against
