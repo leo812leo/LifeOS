@@ -1,5 +1,12 @@
 # Public roadmap
 
+## Notion write diagnostics — 2026-11-14
+
+- Page creation and updates report the SDK error code when Notion rejects a
+  write. This preserves the write failure outcome and avoids logging the
+  response body.
+- Regression tests exercise both write paths with mocked responses.
+
 ## Independent activity sync — 2026-11-09
 
 - After Garmin login, the tracker checks for activities even when Garmin returns

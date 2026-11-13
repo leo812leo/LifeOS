@@ -54,6 +54,18 @@ def get_notion_client(api_key: str) -> Client:
 # ── Page CRUD ─────────────────────────────────────────────────────────────────
 
 
+def _safe_api_error_code(code: object) -> str:
+    """Return an SDK allowlisted constant, never arbitrary error payload text."""
+    return next(
+        (
+            known.value
+            for known in APIErrorCode
+            if isinstance(code, str) and known.value == code
+        ),
+        "unknown",
+    )
+
+
 def create_page(
     client: Client,
     database_id: str,
@@ -86,7 +98,7 @@ def create_page(
         elif exc.code == APIErrorCode.Unauthorized:
             logger.error("Notion API Key 無效或已過期，請重新確認 .env 設定。")
         else:
-            logger.error("Notion API 錯誤：%s - %s", exc.code, exc.message)
+            logger.error("Notion API 錯誤：%s", _safe_api_error_code(exc.code))
         return None
 
     except Exception as exc:
@@ -123,7 +135,7 @@ def update_page(
         elif exc.code == APIErrorCode.Unauthorized:
             logger.error("Notion API Key 無效或已過期，請重新確認 .env 設定。")
         else:
-            logger.error("Notion API 錯誤：%s - %s", exc.code, exc.message)
+            logger.error("Notion API 錯誤：%s", _safe_api_error_code(exc.code))
         return None
 
     except Exception as exc:
