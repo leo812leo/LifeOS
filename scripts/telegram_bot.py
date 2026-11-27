@@ -115,8 +115,8 @@ def safe_send_alert(script_name: str, error_message: str) -> None:
     """
     try:
         send_alert(script_name, error_message)
-    except Exception as exc:
-        logger.warning("Telegram 警告推送失敗（忽略）：%s", exc)
+    except Exception:
+        logger.warning("Telegram 警告推送失敗（忽略）")
 
 
 # ── Telegram API ─────────────────────────────────────────────────────────────
@@ -192,9 +192,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
             logger.info("Telegram 訊息發送成功")
             return True
         else:
-            logger.error(
-                "Telegram 發送失敗：%d %s", resp.status_code, resp.text[:200]
-            )
+            # 回應本文或例外可能含 token URL，不可直接記錄。
+            logger.error("Telegram 發送失敗：HTTP %d", resp.status_code)
             # HTML 解析失敗時，改用純文字重試
             if resp.status_code == 400 and "parse" in resp.text.lower():
                 logger.info("HTML 解析失敗，改用純文字重試")
@@ -205,8 +204,8 @@ def _send_message(token: str, chat_id: str, text: str) -> bool:
                     logger.info("純文字重試成功")
                     return True
             return False
-    except Exception as exc:
-        logger.error("Telegram 發送失敗：%s", exc)
+    except Exception:
+        logger.error("Telegram 發送失敗：傳輸未確認送達")
         return False
 
 
@@ -321,6 +320,7 @@ async def _record_metric(
     找不到當天活動、Notion 未設定、或寫入失敗時，一律暫存到
     ``logs/rpe_pending.jsonl`` 並在回覆中誠實反映「尚未寫入 Notion」，
     絕不假裝已成功記錄。
+    Notion 已確認更新後若 Telegram 回覆失敗，不另建待補寫紀錄。
 
     Args:
         update: Telegram ``Update`` 物件（用來回覆訊息）。
@@ -359,6 +359,7 @@ async def _record_metric(
         )
         return
 
+    write_confirmed = False
     try:
         client = get_notion_client(api_key)
         page = _find_today_activity_page(client, db_id)
@@ -385,12 +386,16 @@ async def _record_metric(
             )
             return
 
+        write_confirmed = True
         note_suffix = f"（{notes}）" if notes else ""
         await update.message.reply_text(
             f"✅ 已寫入 Notion：{label} {value}{note_suffix}" + extra_reply
         )
 
     except Exception as exc:
+        if write_confirmed:
+            logger.error("Notion 更新已確認，但 Telegram 回覆失敗：%s", type(exc).__name__)
+            return
         logger.error("%s 寫入 Notion 時發生未預期錯誤：%s", label, exc)
         _pending()
         await update.message.reply_text(
@@ -431,6 +436,7 @@ async def _record_fuel(
     或寫入失敗（包含 Activity DB 尚未跑 ``add_activity_fuel_fields.js`` 遷移、
     欄位不存在的情況）時，一律暫存到 ``logs/rpe_pending.jsonl`` 並在回覆中
     誠實反映「尚未寫入 Notion」，絕不假裝已成功記錄。
+    Notion 已確認更新後若 Telegram 回覆失敗，不另建待補寫紀錄。
 
     寫入三個欄位：``Fuel Carbs (g)``（number）、``GI Score``（number）、
     ``Fuel Plan``（rich_text，僅在有備註時更新）。
@@ -477,6 +483,7 @@ async def _record_fuel(
         )
         return
 
+    write_confirmed = False
     try:
         client = get_notion_client(api_key)
         page = _find_today_activity_page(client, db_id)
@@ -505,12 +512,16 @@ async def _record_fuel(
             )
             return
 
+        write_confirmed = True
         note_suffix = f"（{notes}）" if notes else ""
         await update.message.reply_text(
             f"✅ 已寫入 Notion：{display}{note_suffix}" + extra_reply
         )
 
     except Exception as exc:
+        if write_confirmed:
+            logger.error("Notion 更新已確認，但 Telegram 回覆失敗：%s", type(exc).__name__)
+            return
         logger.error("Fuel 寫入 Notion 時發生未預期錯誤：%s", exc)
         _pending()
         await update.message.reply_text(

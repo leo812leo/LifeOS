@@ -16,6 +16,7 @@
 """
 
 import json
+import re
 import sys
 import time
 
@@ -182,6 +183,34 @@ def _call_ai_api(
     )
 
 
+def _openrouter_affordable_tokens(response: requests.Response, requested: int) -> Optional[int]:
+    """Read OpenRouter's advisory token cap from a pre-routing credit rejection."""
+    try:
+        error = response.json()["error"]
+        if not isinstance(error, dict) or error.get("code") != 402:
+            return None
+        metadata = error.get("metadata")
+        if metadata is not None and (
+            not isinstance(metadata, dict) or metadata.get("provider_name") is not None
+        ):
+            return None
+        message = error.get("message")
+        if not isinstance(message, str):
+            return None
+        match = re.match(
+            r"This request requires more credits, or fewer max_tokens\. "
+            r"You requested up to ([0-9,]{1,12}) tokens, but can only afford ([0-9,]{1,12})\b",
+            message,
+        )
+        if match:
+            current, allowed = [int(value.replace(",", "")) for value in match.groups()]
+            if current == requested and 256 <= allowed < requested:
+                return allowed
+    except (KeyError, TypeError, ValueError):
+        pass
+    return None
+
+
 def _call_openrouter_api(
     system_prompt: str,
     user_message: str,
@@ -227,9 +256,21 @@ def _call_openrouter_api(
         "max_tokens": max_tokens,
     }
 
+    budget_retried = False
     for attempt in range(max_retries):
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=60)
+
+            if response.status_code == 402:
+                if not budget_retried and attempt + 1 < max_retries:
+                    allowed = _openrouter_affordable_tokens(response, max_tokens)
+                    if allowed is not None:
+                        payload["max_tokens"] = allowed
+                        budget_retried = True
+                        logger.warning("OpenRouter 額度限制，將以較短的輸出上限重試一次")
+                        continue
+                logger.error("OpenRouter HTTP 402：請檢查帳戶餘額及 API 金鑰額度上限")
+                return None
 
             if response.status_code == 429:
                 wait = 2 ** (attempt + 1)
@@ -241,15 +282,14 @@ def _call_openrouter_api(
                 continue
 
             if response.status_code != 200:
-                logger.error(
-                    "OpenRouter API 錯誤 HTTP %d：%s",
-                    response.status_code,
-                    response.text[:300],
-                )
+                logger.error("OpenRouter API 錯誤 HTTP %d", response.status_code)
                 return None
 
-            data = response.json()
-            text = data["choices"][0]["message"]["content"]
+            choice = response.json()["choices"][0]
+            if budget_retried and choice.get("finish_reason") == "length":
+                logger.warning("OpenRouter 以較短上限重試後，輸出仍遭截斷")
+                return None
+            text = choice["message"]["content"]
             logger.info("OpenRouter 回應成功（%s）", model)
             return text
 
@@ -259,7 +299,7 @@ def _call_openrouter_api(
                 time.sleep(2 ** attempt)
 
         except Exception as exc:
-            logger.error("OpenRouter 非預期錯誤：%s", exc)
+            logger.error("OpenRouter 非預期錯誤：%s", type(exc).__name__)
             return None
 
     return None

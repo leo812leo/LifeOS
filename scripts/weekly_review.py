@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from notion_client_helper import get_notion_client, query_pages
+from utils.delivery import send_telegram_text
 from utils.adherence import (
     compute_adherence,
     format_adherence_line,
@@ -88,7 +89,8 @@ def run_weekly_review(dry_run: bool = False) -> Optional[str]:
 
     if not review:
         logger.error("週回顧生成失敗")
-        append_run("weekly_review.py", ok=False, wrote_notion=False)
+        if not dry_run:
+            append_run("weekly_review.py", ok=False, wrote_notion=False)
         return None
 
     # ── 建議遵循率（T15，純程式計算，不經 AI）───────────────────────────
@@ -105,16 +107,11 @@ def run_weekly_review(dry_run: bool = False) -> Optional[str]:
     if dry_run:
         logger.info("乾跑模式 — 內容如下：")
         sys.stdout.buffer.write(("\n" + review + "\n").encode("utf-8"))
-    else:
-        try:
-            from scripts.telegram_bot import send_text
-            ok = send_text(review)
-            if ok:
-                logger.info("✅ 已推送至 Telegram")
-            else:
-                logger.warning("Telegram 未設定或推送失敗")
-        except Exception as exc:
-            logger.error("推送失敗：%s", exc)
+        return review
+
+    if not send_telegram_text(review):
+        append_run("weekly_review.py", ok=False, wrote_notion=False)
+        return None
 
     # weekly_review 本身不寫 Notion DB（只讀歷史資料、推 Telegram 文字），
     # wrote_notion 恆為 False。
@@ -505,8 +502,8 @@ def _generate_weekly_review(
         "**🥗 營養與體重**：熱量赤字評估、蛋白質達標率、體重變化分析\n\n"
         "**🎯 Key Results 檢視**（每個 KR 一段）：\n"
         "對每個 Active KR 給「狀態判斷 + 數據依據 + 行動建議」\n\n"
-        "**💡 下週重點 3-5 點**：具體可執行的優先項\n\n"
-        "全部不超過 600 字，言之有物。"
+        "**💡 下週重點**：最多 3 項具體可執行的優先項\n\n"
+        "全部不超過 400 字。省略缺資料的段落。"
     )
 
     user_message = f"{summary_section}\n\n{kr_section}"
@@ -514,7 +511,7 @@ def _generate_weekly_review(
     response = _call_ai_api(
         system_prompt=system_prompt.replace("{date_range}", week_str),
         user_message=user_message,
-        max_tokens=2048,
+        max_tokens=1024,
     )
 
     if response is None:

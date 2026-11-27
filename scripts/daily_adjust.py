@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
 from config import get_glp1_settings, get_vdot
 from models import ActivityData, AthleteProfile, HealthData, RuleConfig, RuleVerdict
+from utils.delivery import send_telegram_text
 from utils.fueling import (
     carb_target_g_per_hr,
     fuel_target_line,
@@ -146,7 +147,8 @@ def run_daily_adjust(dry_run: bool = False) -> Optional[str]:
 
     if not message:
         logger.error("無法生成微調建議")
-        append_run("daily_adjust.py", ok=False, wrote_notion=False)
+        if not dry_run:
+            append_run("daily_adjust.py", ok=False, wrote_notion=False)
         return None
 
     # ── 3b. 程式層防線（T10）：REST/EASY 判定下 AI 仍建議高強度 → 覆寫 ──
@@ -212,17 +214,13 @@ def run_daily_adjust(dry_run: bool = False) -> Optional[str]:
     if dry_run:
         logger.info("乾跑模式 — 訊息如下：")
         sys.stdout.buffer.write(("\n" + message + "\n").encode("utf-8"))
-    else:
-        try:
-            from scripts.telegram_bot import send_text
-            ok = send_text(message)
-            if ok:
-                logger.info("✅ 已推送至 Telegram")
-            else:
-                logger.warning("Telegram 推送失敗或未設定")
-        except Exception as exc:
-            logger.error("推送失敗：%s", exc)
+        return message
 
+    if not send_telegram_text(message):
+        append_run("daily_adjust.py", ok=False, wrote_notion=False)
+        return None
+
+    # 遵循率只能使用確定已送達的建議，不能包含預覽或失敗的推送。
     _log_advice(today, message, rpe_niggle_records, verdict=verdict, trigger_reason=trigger_reason)
     # daily_adjust 本身不寫 Notion（只讀 Activity DB、推 Telegram），wrote_notion 恆為 False。
     append_run("daily_adjust.py", ok=True, wrote_notion=False)

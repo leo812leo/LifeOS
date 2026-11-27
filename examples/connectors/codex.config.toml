@@ -1,0 +1,7 @@
+# Inactive example: merge only the servers you need, then authorize via OAuth.
+# Prefer an already connected official plugin. Never put tokens in this file.
+[mcp_servers.notion]
+url = "https://mcp.notion.com/mcp"
+
+[mcp_servers.heptabase]
+url = "https://api.heptabase.com/mcp"

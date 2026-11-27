@@ -1,0 +1,44 @@
+name: Automation change
+description: Plan a small connector-first change with a clear owner and acceptance check.
+title: "[Automation] "
+body:
+  - type: markdown
+    attributes:
+      value: "This repository is public. Never paste secrets, account IDs, health/financial records or production logs."
+  - type: textarea
+    id: outcome
+    attributes:
+      label: User outcome
+      description: What repetitive work should become easier?
+    validations:
+      required: true
+  - type: textarea
+    id: reuse
+    attributes:
+      label: Existing connector or SDK
+      description: What can be reused? Distinguish interactive AI tools from background jobs.
+    validations:
+      required: true
+  - type: textarea
+    id: ownership
+    attributes:
+      label: Source of truth and single writer
+      description: Name the data owner, intended writer, code owner and reviewer. Do not include private IDs.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance and rollback
+      description: Specify offline checks, failure behavior, duplicates, freshness and a rollback plan.
+    validations:
+      required: true
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Safety boundaries
+      options:
+        - label: No real-service test traffic or production scheduler changes without separate approval.
+          required: true
+        - label: No private data or credentials in this issue or its PR.
+          required: true

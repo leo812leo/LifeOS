@@ -12,6 +12,9 @@ workspace. Read README.md, SECURITY.md and docs/MIGRATION.md first.
   - Investment: Name, Date, Total TWD, TW Total, US Total, Exchange Rate, Notes.
   - Health: Name, Date, Steps, Resting HR, Sleep Hours, Sleep Score, Stress Avg, Body Battery, Active Calories.
 - Do not import the private source repository's old Git history or private documents.
-- Test with `python -m pytest tests/ -q`; frontend: `cd dashboard && npm test`.
+- Test with `python scripts/test_offline.py`; frontend: `cd dashboard && npm test`.
+- Read docs/CONNECTORS.md before adding integration code. Reuse connected official
+  tools, define one writer per data type, and keep OAuth authorization separate
+  from background runtime credentials. Examples are inactive, not proof of access.
 - Use conventional commits, `codex/` branches when applicable, and no Co-Authored-By trailer.
 - Update docs/ROADMAP.md after code changes. Do not mark mock tests as live-service verification.
