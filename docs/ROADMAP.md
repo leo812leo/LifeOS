@@ -1,5 +1,17 @@
 # Public roadmap
 
+## OpenRouter output-budget recovery — 2026-11-28
+
+When OpenRouter rejects a request before routing and reports a smaller usable
+output budget, the client allows one lower-cap retry within its existing
+attempt limit. An exhausted limit stops the request. A truncated reply after
+the reduced-budget retry stays a failure. Logs record status and exception
+type without including the provider response text.
+
+The three regression cases failed before the change. Afterward, the combined
+Windows suite passed 827 offline tests. No real provider call or deployment
+was used. [OpenRouter limit behavior](https://openrouter.ai/docs/api_reference/limits)
+
 ## Integrated offline validation — 2026-11-28
 
 The connector foundation, investment snapshot validation, independent activity

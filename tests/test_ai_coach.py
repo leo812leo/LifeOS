@@ -168,6 +168,53 @@ class TestCallOpenrouterApi:
 
         assert result is None
 
+    def test_retries_once_with_lower_openrouter_token_allowance(self) -> None:
+        budget = self._mock_budget_response(512, 320)
+        calls = []
+        responses = iter([budget, self._mock_success_response("short complete response")])
+
+        def respond(_url, **kwargs):
+            calls.append(kwargs["json"]["max_tokens"])
+            return next(responses)
+
+        with patch("scripts.ai_coach.requests.post", side_effect=respond):
+            result = _call_openrouter_api("sys", "msg", api_key="synthetic-key", max_tokens=512)
+
+        assert result == "short complete response"
+        assert calls == [512, 320]
+
+    def test_credit_error_without_usable_allowance_stops_and_redacts(self, caplog) -> None:
+        budget = self._mock_budget_response(512, 8)
+        budget.text = "synthetic-private-provider-response"
+        with patch("scripts.ai_coach.requests.post", return_value=budget) as post:
+            assert _call_openrouter_api("sys", "msg", api_key="synthetic-key", max_tokens=512) is None
+
+        post.assert_called_once()
+        assert "HTTP 402" in caplog.text
+        assert budget.text not in caplog.text
+
+    def test_second_402_stops_and_capped_truncated_reply_is_discarded(self) -> None:
+        budget = self._mock_budget_response(512, 320)
+        second_budget = self._mock_budget_response(320, 280)
+        truncated = self._mock_success_response("incomplete response")
+        truncated.json.return_value["choices"][0]["finish_reason"] = "length"
+        for response in (second_budget, truncated):
+            with patch("scripts.ai_coach.requests.post", side_effect=[budget, response]) as post:
+                assert _call_openrouter_api("sys", "msg", api_key="synthetic-key", max_tokens=512) is None
+            assert post.call_count == 2
+
+    def _mock_budget_response(self, requested: int, allowed: int) -> MagicMock:
+        response = MagicMock(status_code=402)
+        response.json.return_value = {"error": {
+            "code": 402,
+            "message": (
+                "This request requires more credits, or fewer max_tokens. "
+                f"You requested up to {requested} tokens, but can only afford {allowed}."
+            ),
+            "metadata": {"limit_source": "openrouter_key_limit", "provider_name": None},
+        }}
+        return response
+
     def test_returns_none_on_timeout(self) -> None:
         import requests as req_lib
         with (
