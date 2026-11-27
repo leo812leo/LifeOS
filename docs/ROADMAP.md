@@ -1,5 +1,13 @@
 # Public roadmap
 
+## Integrated offline validation — 2026-11-28
+
+The connector foundation, investment snapshot validation, independent activity
+lookup, Notion write diagnostics and weekly Garmin Coach report fixes were
+assembled from public PRs #1–#5. Only the roadmap needed conflict resolution.
+The combined Windows Python suite passed 824 offline tests. This integration
+has not run against production credentials, data, or scheduled jobs.
+
 ## Notion write diagnostics — 2026-11-14
 
 - Page creation and updates report the SDK error code when Notion rejects a
