@@ -502,8 +502,8 @@ def _generate_weekly_review(
         "**🥗 營養與體重**：熱量赤字評估、蛋白質達標率、體重變化分析\n\n"
         "**🎯 Key Results 檢視**（每個 KR 一段）：\n"
         "對每個 Active KR 給「狀態判斷 + 數據依據 + 行動建議」\n\n"
-        "**💡 下週重點 3-5 點**：具體可執行的優先項\n\n"
-        "全部不超過 600 字，言之有物。"
+        "**💡 下週重點**：最多 3 項具體可執行的優先項\n\n"
+        "全部不超過 400 字。省略缺資料的段落。"
     )
 
     user_message = f"{summary_section}\n\n{kr_section}"
@@ -511,7 +511,7 @@ def _generate_weekly_review(
     response = _call_ai_api(
         system_prompt=system_prompt.replace("{date_range}", week_str),
         user_message=user_message,
-        max_tokens=2048,
+        max_tokens=1024,
     )
 
     if response is None:
